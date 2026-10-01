@@ -101,7 +101,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador com conexão PostgreSQL.\nVersão Beta 1.2",
+                "Importador de dados para PostgreSQL.\nVersão Beta 1.2",
                 parent=self.root,
             ),
         )
