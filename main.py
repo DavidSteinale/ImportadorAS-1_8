@@ -654,7 +654,7 @@ class ImportadorApp:
         return type(valor).__name__, str(valor).strip().casefold()
 
     def _analisar_colunas_unicas_xlsx(self, caminho, colunas):
-        # Exige codigo preenchido; codigo_Barra pode ficar vazio, mas não pode se repetir preenchido.
+        # Exige as duas colunas no cabeçalho e valida a unicidade dos valores preenchidos.
         colunas_obrigatorias = ("codigo", "codigo_Barra")
         indices_colunas = {nome.casefold(): [] for nome in colunas_obrigatorias}
         problemas = []
@@ -692,9 +692,6 @@ class ImportadorApp:
                     indice = indices[0]
                     valor = valores[indice] if indice < len(valores) else None
                     if valor is None or (isinstance(valor, str) and not valor.strip()):
-                        if nome_coluna.casefold() == "codigo_barra":
-                            continue
-                        problemas.append(f'Linha {numero_linha}, coluna "{nome_coluna}": valor vazio.')
                         continue
 
                     chave_valor = self._normalizar_valor_unico(valor)
@@ -791,7 +788,7 @@ class ImportadorApp:
             )
             return
 
-        # Interrompe a importação se codigo falhar ou se codigo_Barra tiver duplicidades.
+        # Interrompe a importação se faltar uma coluna ou houver valor preenchido duplicado.
         try:
             nome_aba, linhas_analisadas, problemas = self._analisar_colunas_unicas_xlsx(
                 caminho, colunas
@@ -837,14 +834,14 @@ class ImportadorApp:
             messagebox.showerror(
                 "Planilha reprovada na validação",
                 f"Foram encontrados {len(problemas)} problema(s) nas colunas "
-                "codigo e codigo_Barra preenchido. A importação foi cancelada.\n\n"
+                "codigo e codigo_Barra. A importação foi cancelada.\n\n"
                 f"Relatório salvo em:\n{ARQUIVO_RELATORIO_VALIDACAO}",
                 parent=self.root,
             )
             return
 
         LOGGER.info(
-            "Validação de codigo e codigo_Barra preenchido concluída: tabela=%s linhas=%s.",
+            "Validação de colunas e duplicidade concluída: tabela=%s linhas=%s.",
             nome_tabela,
             linhas_analisadas,
         )

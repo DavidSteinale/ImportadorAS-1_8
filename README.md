@@ -34,7 +34,7 @@ Instale o Microsoft ODBC Driver 17 ou 18 para SQL Server, com arquitetura compat
 
 Use **Importar > Importar dados por XLSX...**. Informe a tabela de destino (opcionalmente `esquema.tabela`) e selecione o arquivo. A aba ativa deve ter cabeçalho na primeira linha, com nomes de colunas compatíveis com a tabela.
 
-Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. A coluna `codigo` é obrigatória, não pode estar vazia e não pode ter valores repetidos. A coluna `codigo_Barra` pode ficar vazia; os valores preenchidos, porém, não podem se repetir. Se houver problemas, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores da planilha; revise-o antes de compartilhar.
+Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. Ambas podem ficar vazias. Quando preenchidos, os valores de cada coluna não podem se repetir. Se houver duplicidades, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores da planilha; revise-o antes de compartilhar.
 
 Todos os `INSERT`s da planilha são feitos na mesma transação: em caso de erro, a transação é revertida.
 
