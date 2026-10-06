@@ -4,5 +4,6 @@ __pycache__/
 *.py[cod]
 .env
 importador.txt
+relatorio_validacao_importacao.txt
 build/
 dist/

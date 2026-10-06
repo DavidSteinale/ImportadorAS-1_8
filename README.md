@@ -1,6 +1,16 @@
-# Importador
+# Importador de Dados
 
-Aplicacao desktop em Python para consultar e importar dados para o PostgreSQL.
+Aplicativo desktop para consultar e importar dados do PostgreSQL e consultar o Microsoft SQL Server. Versão Beta 1.3.
+
+## Menus
+
+- **Menu > Configurar conexão...**: informa os dados PostgreSQL para a sessão atual.
+- **Menu > Testar conexão**: testa os dados PostgreSQL aplicados.
+- **Menu > Executar comandos...**: executa `SELECT`, `INSERT`, `UPDATE` ou `DELETE` no PostgreSQL. `UPDATE` e `DELETE` pedem confirmação.
+- **Obter dados > PostgreSQL**: consulta uma tabela PostgreSQL e permite exportar o resultado para XLSX.
+- **Obter dados > SQL Server**: consulta uma tabela SQL Server via ODBC e permite exportar o resultado para XLSX.
+- **Importar > Importar dados por XLSX...**: importa uma planilha XLSX para uma tabela PostgreSQL.
+- **Ajuda > Sobre**: mostra a descrição e versão do aplicativo.
 
 ## Preparar o ambiente
 
@@ -14,6 +24,35 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-Edite o arquivo `.env` com os dados locais do PostgreSQL. Esse arquivo e ignorado pelo Git e nao deve ser enviado ao GitHub.
+Edite `.env` com os dados locais. O arquivo é ignorado pelo Git e não deve ser enviado ao GitHub. A conexão só é aberta quando uma operação é iniciada.
 
-Para importar produtos, use **Importar > Importar produtos por XLSX...**. A primeira linha da aba ativa deve conter os nomes das colunas existentes na tabela `produto`.
+### SQL Server
+
+Instale o Microsoft ODBC Driver 17 ou 18 para SQL Server, com arquitetura compatível com o aplicativo. Configure no `.env` `MSSQL_DRIVER`, `MSSQL_SERVER`, `MSSQL_PORT`, `MSSQL_DATABASE`, `MSSQL_USER` e `MSSQL_PASSWORD`; ou informe os campos na janela **Obter dados > SQL Server**. A opção para confiar no certificado deve ser usada somente em desenvolvimento.
+
+## Importar planilha XLSX
+
+Use **Importar > Importar dados por XLSX...**. Informe a tabela de destino (opcionalmente `esquema.tabela`) e selecione o arquivo. A aba ativa deve ter cabeçalho na primeira linha, com nomes de colunas compatíveis com a tabela.
+
+Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. A coluna `codigo` é obrigatória, não pode estar vazia e não pode ter valores repetidos. A coluna `codigo_Barra` pode ficar vazia; os valores preenchidos, porém, não podem se repetir. Se houver problemas, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores da planilha; revise-o antes de compartilhar.
+
+Todos os `INSERT`s da planilha são feitos na mesma transação: em caso de erro, a transação é revertida.
+
+## Consultas e exportação
+
+As telas **Obter dados > PostgreSQL** e **Obter dados > SQL Server** recebem os dados de conexão e uma tabela (ou `esquema.tabela`), executam `SELECT *` e mostram até 1.000 linhas na grade. O botão **Salvar resultado em Excel...** exporta o resultado consultado para `.xlsx`, respeitando o limite de linhas do formato.
+
+## Logs
+
+O aplicativo escreve eventos e erros em `importador.txt`, ao lado de `Importador.exe` quando empacotado ou ao lado de `main.py` no modo de desenvolvimento. O log não contém senhas nem o texto literal dos comandos SQL.
+
+## Gerar o executável
+
+Com o ambiente virtual ativado:
+
+```powershell
+python -m pip install pyinstaller
+pyinstaller --noconfirm --clean --onefile --windowed --name Importador --specpath build --workpath build --distpath dist --collect-all psycopg --collect-all openpyxl --collect-all dotenv main.py
+```
+
+O arquivo gerado fica em `dist\Importador.exe`. Para SQL Server, o Microsoft ODBC Driver correspondente também precisa estar instalado no Windows.

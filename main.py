@@ -3,6 +3,7 @@ import re
 import logging
 import sys
 import tkinter as tk
+from contextlib import closing
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
 from pathlib import Path
@@ -13,6 +14,7 @@ from dotenv import load_dotenv
 from openpyxl import Workbook, load_workbook
 from openpyxl.utils.exceptions import InvalidFileException
 import psycopg
+import pyodbc
 from psycopg import sql
 # import xlwt  # Exportação XLS desativada temporariamente.
 
@@ -23,6 +25,7 @@ PASTA_APLICATIVO = (
     else Path(__file__).resolve().parent
 )
 ARQUIVO_LOG = PASTA_APLICATIVO / "importador.txt"
+ARQUIVO_RELATORIO_VALIDACAO = PASTA_APLICATIVO / "relatorio_validacao_importacao.txt"
 
 LOGGER = logging.getLogger("importador")
 LOGGER.setLevel(logging.INFO)
@@ -49,6 +52,7 @@ class ImportadorApp:
         self.root.geometry("600x340")
         self.root.minsize(460, 260)
         self.configuracao = None
+        self.configuracao_sqlserver = None
         self.status = tk.StringVar(value="Configure os dados do PostgreSQL para começar.")
         self.root.report_callback_exception = self._registrar_erro_interface
 
@@ -88,6 +92,13 @@ class ImportadorApp:
             command=self.abrir_obter_dados,
         )
         obter_dados_menu.add_cascade(label="PostgreSQL", menu=postgres_menu)
+
+        sql_server_menu = tk.Menu(obter_dados_menu, tearoff=False)
+        sql_server_menu.add_command(
+            label="Consultar tabela e salvar em Excel...",
+            command=self.abrir_obter_dados_sqlserver,
+        )
+        obter_dados_menu.add_cascade(label="SQL Server", menu=sql_server_menu)
         menu.add_cascade(label="Obter dados", menu=obter_dados_menu)
 
         importar_menu = tk.Menu(menu, tearoff=False)
@@ -101,7 +112,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador de dados para PostgreSQL.\nVersão Beta 1.2",
+                "Importador de dados para PostgreSQL e SQL Server.\nVersão Beta 1.3",
                 parent=self.root,
             ),
         )
@@ -206,6 +217,267 @@ class ImportadorApp:
         rolagem_horizontal.grid(row=1, column=0, sticky="ew")
         area_resultados.rowconfigure(0, weight=1)
         area_resultados.columnconfigure(0, weight=1)
+
+    def abrir_obter_dados_sqlserver(self):
+        # Abre a tela de consulta usando SQL Server e os drivers ODBC instalados.
+        drivers = pyodbc.drivers()
+        driver_preferido = os.getenv("MSSQL_DRIVER", "").strip()
+        if not driver_preferido:
+            driver_preferido = next(
+                (
+                    driver
+                    for versao in ("ODBC Driver 18 for SQL Server", "ODBC Driver 17 for SQL Server")
+                    for driver in drivers
+                    if driver == versao
+                ),
+                drivers[0] if drivers else "ODBC Driver 18 for SQL Server",
+            )
+        if driver_preferido not in drivers:
+            drivers.insert(0, driver_preferido)
+
+        janela = tk.Toplevel(self.root)
+        janela.title("Obter dados do SQL Server")
+        janela.geometry("960x640")
+        janela.minsize(700, 480)
+        janela.transient(self.root)
+
+        valores_atuais = self.configuracao_sqlserver or {
+            "driver": driver_preferido,
+            "server": os.getenv("MSSQL_SERVER", "localhost"),
+            "port": os.getenv("MSSQL_PORT", "1433"),
+            "dbname": os.getenv("MSSQL_DATABASE", ""),
+            "user": os.getenv("MSSQL_USER", ""),
+            "password": os.getenv("MSSQL_PASSWORD", ""),
+            "trust_server_certificate": os.getenv(
+                "MSSQL_TRUST_SERVER_CERTIFICATE", "false"
+            ).lower() in {"1", "true", "yes"},
+        }
+        campos = (
+            ("Driver ODBC", "driver"),
+            ("Servidor", "server"),
+            ("Porta", "port"),
+            ("Banco", "dbname"),
+            ("Usuário", "user"),
+            ("Senha", "password"),
+        )
+        variaveis = {
+            chave: tk.StringVar(value=str(valores_atuais[chave]))
+            for _, chave in campos
+        }
+        confiar_certificado = tk.BooleanVar(
+            value=valores_atuais["trust_server_certificate"]
+        )
+        nome_tabela = tk.StringVar()
+        status = tk.StringVar(value="Informe a conexão e a tabela para consultar.")
+        resultado = {"colunas": [], "linhas": []}
+
+        formulario = ttk.Frame(janela, padding=12)
+        formulario.pack(fill="x")
+        for indice, (rotulo, chave) in enumerate(campos):
+            coluna = indice * 2
+            ttk.Label(formulario, text=rotulo).grid(
+                row=0, column=coluna, sticky="w", padx=(0, 6)
+            )
+            if chave == "driver":
+                entrada = ttk.Combobox(
+                    formulario,
+                    textvariable=variaveis[chave],
+                    values=drivers,
+                    width=24,
+                    state="readonly",
+                )
+            else:
+                entrada = ttk.Entry(
+                    formulario,
+                    textvariable=variaveis[chave],
+                    width=16,
+                    show="*" if chave == "password" else "",
+                )
+            entrada.grid(row=1, column=coluna, sticky="ew", padx=(0, 10), pady=(4, 0))
+            formulario.columnconfigure(coluna, weight=1)
+
+        ttk.Checkbutton(
+            formulario,
+            text="Confiar no certificado do servidor (desenvolvimento)",
+            variable=confiar_certificado,
+        ).grid(row=2, column=0, columnspan=6, sticky="w", pady=(10, 0))
+        ttk.Label(formulario, text="Tabela (ou esquema.tabela)").grid(
+            row=3, column=0, columnspan=2, sticky="w", pady=(10, 0)
+        )
+        ttk.Entry(formulario, textvariable=nome_tabela, width=36).grid(
+            row=4, column=0, columnspan=2, sticky="ew", padx=(0, 10), pady=(4, 0)
+        )
+
+        barra = ttk.Frame(janela, padding=(12, 0, 12, 8))
+        barra.pack(fill="x")
+        botao_excel = ttk.Button(
+            barra,
+            text="Salvar resultado em Excel...",
+            state="disabled",
+            command=lambda: self.salvar_dados_excel(resultado, janela),
+        )
+        botao_excel.pack(side="right")
+        ttk.Button(
+            barra,
+            text="Obter dados",
+            command=lambda: self.consultar_tabela_sqlserver(
+                variaveis,
+                confiar_certificado,
+                nome_tabela,
+                resultado,
+                tabela_resultados,
+                status,
+                botao_excel,
+                janela,
+            ),
+        ).pack(side="left")
+        ttk.Label(barra, textvariable=status).pack(side="left", padx=12)
+
+        area_resultados = ttk.Frame(janela, padding=(12, 0, 12, 12))
+        area_resultados.pack(fill="both", expand=True)
+        tabela_resultados = ttk.Treeview(area_resultados, show="headings")
+        rolagem_vertical = ttk.Scrollbar(
+            area_resultados, orient="vertical", command=tabela_resultados.yview
+        )
+        rolagem_horizontal = ttk.Scrollbar(
+            area_resultados, orient="horizontal", command=tabela_resultados.xview
+        )
+        tabela_resultados.configure(
+            yscrollcommand=rolagem_vertical.set,
+            xscrollcommand=rolagem_horizontal.set,
+        )
+        tabela_resultados.grid(row=0, column=0, sticky="nsew")
+        rolagem_vertical.grid(row=0, column=1, sticky="ns")
+        rolagem_horizontal.grid(row=1, column=0, sticky="ew")
+        area_resultados.rowconfigure(0, weight=1)
+        area_resultados.columnconfigure(0, weight=1)
+
+    @staticmethod
+    def _valor_conexao_odbc(valor):
+        # Escapa valores de conexão ODBC que contenham chaves ou ponto e vírgula.
+        return "{" + str(valor).replace("}", "}}") + "}"
+
+    @staticmethod
+    def _identificador_sqlserver(partes):
+        # Delimita cada parte do nome para evitar interpretar o nome como SQL executável.
+        return ".".join("[" + parte.replace("]", "]]" ) + "]" for parte in partes)
+
+    def consultar_tabela_sqlserver(
+        self,
+        variaveis,
+        confiar_certificado,
+        nome_tabela,
+        resultado,
+        tabela_resultados,
+        status,
+        botao_excel,
+        parent,
+    ):
+        # Valida os dados ODBC e o destino antes de abrir a conexão SQL Server.
+        configuracao = {chave: variavel.get().strip() for chave, variavel in variaveis.items()}
+        try:
+            configuracao["port"] = int(configuracao["port"])
+            if not 1 <= configuracao["port"] <= 65535:
+                raise ValueError
+        except ValueError:
+            messagebox.showerror("Porta inválida", "Informe uma porta entre 1 e 65535.", parent=parent)
+            return
+
+        obrigatorios = ("driver", "server", "dbname", "user", "password")
+        if any(not configuracao[chave] for chave in obrigatorios):
+            messagebox.showerror(
+                "Dados incompletos",
+                "Preencha driver, servidor, banco, usuário e senha.",
+                parent=parent,
+            )
+            return
+
+        partes_tabela = [parte.strip() for parte in nome_tabela.get().strip().split(".")]
+        if not partes_tabela[0] or len(partes_tabela) > 2 or any(not parte for parte in partes_tabela):
+            messagebox.showerror(
+                "Tabela inválida",
+                "Informe o nome da tabela ou esquema.tabela.",
+                parent=parent,
+            )
+            return
+
+        configuracao["trust_server_certificate"] = confiar_certificado.get()
+        nome_tabela_log = ".".join(partes_tabela)
+        LOGGER.info(
+            "Consulta SQL Server iniciada: tabela=%s banco=%s servidor=%s.",
+            nome_tabela_log,
+            configuracao["dbname"],
+            configuracao["server"],
+        )
+        tabela_resultados.delete(*tabela_resultados.get_children())
+        resultado["colunas"] = []
+        resultado["linhas"] = []
+        botao_excel.state(["disabled"])
+
+        servidor = f"{configuracao['server']},{configuracao['port']}"
+        string_conexao = ";".join(
+            (
+                f"DRIVER={self._valor_conexao_odbc(configuracao['driver'])}",
+                f"SERVER={self._valor_conexao_odbc(servidor)}",
+                f"DATABASE={self._valor_conexao_odbc(configuracao['dbname'])}",
+                f"UID={self._valor_conexao_odbc(configuracao['user'])}",
+                f"PWD={self._valor_conexao_odbc(configuracao['password'])}",
+                "Encrypt=yes",
+                "TrustServerCertificate=" + ("yes" if confiar_certificado.get() else "no"),
+                "Connection Timeout=5",
+            )
+        )
+        tabela_sql = self._identificador_sqlserver(partes_tabela)
+        consulta = f"SELECT * FROM {tabela_sql}"
+
+        try:
+            with closing(pyodbc.connect(string_conexao, timeout=5)) as conexao:
+                with closing(conexao.cursor()) as cursor:
+                    cursor.execute(consulta)
+                    colunas = [coluna[0] for coluna in cursor.description]
+                    linhas = []
+                    while True:
+                        lote = cursor.fetchmany(2000)
+                        if not lote:
+                            break
+                        linhas.extend(lote)
+        except pyodbc.Error as erro:
+            status.set("Falha ao obter dados do SQL Server.")
+            LOGGER.error(
+                "Consulta SQL Server falhou: tabela=%s erro=%s.",
+                nome_tabela_log,
+                type(erro).__name__,
+            )
+            messagebox.showerror("Erro na consulta SQL Server", str(erro), parent=parent)
+            return
+
+        LOGGER.info(
+            "Consulta SQL Server concluída: tabela=%s registros=%s.",
+            nome_tabela_log,
+            len(linhas),
+        )
+        self.configuracao_sqlserver = configuracao
+        resultado["colunas"] = colunas
+        resultado["linhas"] = linhas
+        identificadores = [f"coluna_{indice}" for indice in range(len(colunas))]
+        tabela_resultados.configure(columns=identificadores)
+        for identificador, nome in zip(identificadores, colunas):
+            tabela_resultados.heading(identificador, text=nome)
+            tabela_resultados.column(identificador, width=150, minwidth=80, stretch=True)
+        for linha in linhas[:1000]:
+            tabela_resultados.insert(
+                "",
+                "end",
+                values=[
+                    "" if valor is None else str(self._decodificar_bytes(valor))
+                    for valor in linha
+                ],
+            )
+
+        botao_excel.state(["!disabled"])
+        status.set(
+            f"{len(linhas)} registro(s) obtido(s); a tela exibe até 1.000."
+        )
 
     def consultar_tabela(
         self,
@@ -370,6 +642,77 @@ class ImportadorApp:
             return bytes(valor).decode("utf-8", errors="replace")
         return valor
 
+    @staticmethod
+    def _normalizar_valor_unico(valor):
+        # Normaliza os tipos numéricos do Excel e ignora espaços/capitalização em textos.
+        if isinstance(valor, str):
+            return "texto", valor.strip().casefold()
+        if isinstance(valor, bool):
+            return "booleano", valor
+        if isinstance(valor, (int, float, Decimal)):
+            return "numero", Decimal(str(valor)).normalize()
+        return type(valor).__name__, str(valor).strip().casefold()
+
+    def _analisar_colunas_unicas_xlsx(self, caminho, colunas):
+        # Exige codigo preenchido; codigo_Barra pode ficar vazio, mas não pode se repetir preenchido.
+        colunas_obrigatorias = ("codigo", "codigo_Barra")
+        indices_colunas = {nome.casefold(): [] for nome in colunas_obrigatorias}
+        problemas = []
+
+        for indice, nome_coluna in enumerate(colunas):
+            chave = nome_coluna.casefold()
+            if chave in indices_colunas:
+                indices_colunas[chave].append(indice)
+
+        for nome_coluna in colunas_obrigatorias:
+            indices = indices_colunas[nome_coluna.casefold()]
+            if not indices:
+                problemas.append(f'Coluna obrigatória "{nome_coluna}" ausente no cabeçalho.')
+            elif len(indices) > 1:
+                problemas.append(f'Coluna obrigatória "{nome_coluna}" aparece mais de uma vez.')
+
+        primeira_ocorrencia = {nome: {} for nome in colunas_obrigatorias}
+        linhas_analisadas = 0
+        workbook = load_workbook(caminho, read_only=True, data_only=True)
+        try:
+            planilha = workbook.active
+            for numero_linha, linha in enumerate(
+                planilha.iter_rows(min_row=2, values_only=True), start=2
+            ):
+                valores = list(linha)
+                if not any(valor is not None for valor in valores):
+                    continue
+                linhas_analisadas += 1
+
+                for nome_coluna in colunas_obrigatorias:
+                    indices = indices_colunas[nome_coluna.casefold()]
+                    if len(indices) != 1:
+                        continue
+
+                    indice = indices[0]
+                    valor = valores[indice] if indice < len(valores) else None
+                    if valor is None or (isinstance(valor, str) and not valor.strip()):
+                        if nome_coluna.casefold() == "codigo_barra":
+                            continue
+                        problemas.append(f'Linha {numero_linha}, coluna "{nome_coluna}": valor vazio.')
+                        continue
+
+                    chave_valor = self._normalizar_valor_unico(valor)
+                    ocorrencias = primeira_ocorrencia[nome_coluna]
+                    if chave_valor in ocorrencias:
+                        primeira_linha, valor_original = ocorrencias[chave_valor]
+                        problemas.append(
+                            f'Linha {numero_linha}, coluna "{nome_coluna}": valor '
+                            f'"{valor_original}" duplicado (primeira ocorrência na linha '
+                            f'{primeira_linha}).'
+                        )
+                    else:
+                        ocorrencias[chave_valor] = (numero_linha, valor)
+        finally:
+            workbook.close()
+
+        return planilha.title, linhas_analisadas, problemas
+
     def importar_dados_xlsx(self):
         # Solicita destino e arquivo antes de começar a preparar os registros.
         if not self._exigir_configuracao():
@@ -447,6 +790,64 @@ class ImportadorApp:
                 parent=self.root,
             )
             return
+
+        # Interrompe a importação se codigo falhar ou se codigo_Barra tiver duplicidades.
+        try:
+            nome_aba, linhas_analisadas, problemas = self._analisar_colunas_unicas_xlsx(
+                caminho, colunas
+            )
+        except (OSError, BadZipFile, InvalidFileException, ValueError) as erro:
+            LOGGER.error("Falha na análise prévia da planilha (%s).", type(erro).__name__)
+            messagebox.showerror("Erro na análise da planilha", str(erro), parent=self.root)
+            return
+
+        if problemas:
+            conteudo_relatorio = [
+                "RELATORIO DE VALIDACAO DA IMPORTACAO XLSX",
+                f"Data e hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Arquivo: {Path(caminho).name}",
+                f"Aba analisada: {nome_aba}",
+                f"Tabela de destino: {nome_tabela}",
+                f"Linhas com dados analisadas: {linhas_analisadas}",
+                f"Problemas encontrados: {len(problemas)}",
+                "",
+                "DETALHES",
+                *[f"- {problema}" for problema in problemas],
+            ]
+            try:
+                ARQUIVO_RELATORIO_VALIDACAO.write_text(
+                    "\n".join(conteudo_relatorio) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as erro:
+                LOGGER.error("Falha ao salvar relatório de validação (%s).", type(erro).__name__)
+                messagebox.showerror(
+                    "Erro ao salvar relatório",
+                    f"Não foi possível salvar o relatório:\n{erro}",
+                    parent=self.root,
+                )
+                return
+
+            LOGGER.warning(
+                "Importação bloqueada pela validação: tabela=%s problemas=%s relatório=%s.",
+                nome_tabela,
+                len(problemas),
+                ARQUIVO_RELATORIO_VALIDACAO.name,
+            )
+            messagebox.showerror(
+                "Planilha reprovada na validação",
+                f"Foram encontrados {len(problemas)} problema(s) nas colunas "
+                "codigo e codigo_Barra preenchido. A importação foi cancelada.\n\n"
+                f"Relatório salvo em:\n{ARQUIVO_RELATORIO_VALIDACAO}",
+                parent=self.root,
+            )
+            return
+
+        LOGGER.info(
+            "Validação de codigo e codigo_Barra preenchido concluída: tabela=%s linhas=%s.",
+            nome_tabela,
+            linhas_analisadas,
+        )
 
         nomes_colunas = ", ".join(colunas)
         confirmar = messagebox.askyesno(
