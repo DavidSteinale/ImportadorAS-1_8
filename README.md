@@ -1,15 +1,15 @@
 # Importador de Dados
 
-Aplicativo desktop para consultar e importar dados do PostgreSQL e consultar o Microsoft SQL Server. Versão Beta 1.3.
+Aplicativo desktop para consultar e importar dados do PostgreSQL e consultar o Microsoft SQL Server. Versão Beta 1.4.
 
 ## Menus
 
 - **Menu > Configurar conexão...**: informa os dados PostgreSQL para a sessão atual.
 - **Menu > Testar conexão**: testa os dados PostgreSQL aplicados.
-- **Menu > Executar comandos...**: executa `SELECT`, `INSERT`, `UPDATE` ou `DELETE` no PostgreSQL. `UPDATE` e `DELETE` pedem confirmação.
+- **Menu > Executar comandos...**: executa consultas `SELECT` somente leitura no PostgreSQL.
 - **Obter dados > PostgreSQL**: consulta uma tabela PostgreSQL e permite exportar o resultado para XLSX.
 - **Obter dados > SQL Server**: consulta uma tabela SQL Server via ODBC e permite exportar o resultado para XLSX.
-- **Importar > Importar dados por XLSX...**: importa uma planilha XLSX para uma tabela PostgreSQL.
+- **Importar > Importar dados por CSV...**: importa um arquivo CSV separado por ponto e vírgula para uma tabela PostgreSQL.
 - **Ajuda > Sobre**: mostra a descrição e versão do aplicativo.
 
 ## Preparar o ambiente
@@ -30,13 +30,13 @@ Edite `.env` com os dados locais. O arquivo é ignorado pelo Git e não deve ser
 
 Instale o Microsoft ODBC Driver 17 ou 18 para SQL Server, com arquitetura compatível com o aplicativo. Configure no `.env` `MSSQL_DRIVER`, `MSSQL_SERVER`, `MSSQL_PORT`, `MSSQL_DATABASE`, `MSSQL_USER` e `MSSQL_PASSWORD`; ou informe os campos na janela **Obter dados > SQL Server**. A opção para confiar no certificado deve ser usada somente em desenvolvimento.
 
-## Importar planilha XLSX
+## Importar arquivo CSV
 
-Use **Importar > Importar dados por XLSX...**. Informe a tabela de destino (opcionalmente `esquema.tabela`) e selecione o arquivo. A aba ativa deve ter cabeçalho na primeira linha, com nomes de colunas compatíveis com a tabela.
+Use **Importar > Importar dados por CSV...**. Informe a tabela de destino (opcionalmente `esquema.tabela`) e selecione o arquivo. O delimitador deve ser ponto e vírgula (`;`) e a primeira linha deve conter os nomes das colunas da tabela PostgreSQL.
 
-Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. Ambas podem ficar vazias. Quando preenchidos, os valores de cada coluna não podem se repetir. Se houver duplicidades, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores da planilha; revise-o antes de compartilhar.
+Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. Ambas podem ficar vazias. Quando preenchidos, os valores de cada coluna não podem se repetir. Se houver duplicidades, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores do arquivo; revise-o antes de compartilhar.
 
-Todos os `INSERT`s da planilha são feitos na mesma transação: em caso de erro, a transação é revertida.
+Todos os `INSERT`s do CSV são feitos na mesma transação: em caso de erro, a transação é revertida. Arquivos com BOM UTF-8 são aceitos; células vazias são importadas como `NULL`.
 
 ## Consultas e exportação
 

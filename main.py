@@ -1,3 +1,4 @@
+import csv
 import os
 import re
 import logging
@@ -103,7 +104,7 @@ class ImportadorApp:
 
         importar_menu = tk.Menu(menu, tearoff=False)
         importar_menu.add_command(
-            label="Importar dados por XLSX...", command=self.importar_dados_xlsx
+            label="Importar dados por CSV...", command=self.importar_dados_csv
         )
         menu.add_cascade(label="Importar", menu=importar_menu)
 
@@ -112,7 +113,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador de dados para PostgreSQL e SQL Server.\nVersão Beta 1.3",
+                "Importador de dados para PostgreSQL.\nVersão Beta 1.4",
                 parent=self.root,
             ),
         )
@@ -644,7 +645,7 @@ class ImportadorApp:
 
     @staticmethod
     def _normalizar_valor_unico(valor):
-        # Normaliza os tipos numéricos do Excel e ignora espaços/capitalização em textos.
+        # Normaliza valores e ignora espaços/capitalização em textos.
         if isinstance(valor, str):
             return "texto", valor.strip().casefold()
         if isinstance(valor, bool):
@@ -653,6 +654,8 @@ class ImportadorApp:
             return "numero", Decimal(str(valor)).normalize()
         return type(valor).__name__, str(valor).strip().casefold()
 
+    # Importação XLSX desativada em favor da importação por CSV.
+    """
     def _analisar_colunas_unicas_xlsx(self, caminho, colunas):
         # Exige as duas colunas no cabeçalho e valida a unicidade dos valores preenchidos.
         colunas_obrigatorias = ("codigo", "codigo_Barra")
@@ -919,6 +922,256 @@ class ImportadorApp:
             parent=self.root,
         )
 
+    """
+
+    def _analisar_colunas_unicas_csv(self, caminho, colunas):
+        # Valida a presença e a unicidade dos valores em codigo e codigo_Barra.
+        colunas_obrigatorias = ("codigo", "codigo_Barra")
+        indices_colunas = {nome.casefold(): [] for nome in colunas_obrigatorias}
+        problemas = []
+
+        for indice, nome_coluna in enumerate(colunas):
+            chave = nome_coluna.casefold()
+            if chave in indices_colunas:
+                indices_colunas[chave].append(indice)
+
+        for nome_coluna in colunas_obrigatorias:
+            indices = indices_colunas[nome_coluna.casefold()]
+            if not indices:
+                problemas.append(f'Coluna obrigatória "{nome_coluna}" ausente no cabeçalho.')
+            elif len(indices) > 1:
+                problemas.append(f'Coluna obrigatória "{nome_coluna}" aparece mais de uma vez.')
+
+        primeira_ocorrencia = {nome: {} for nome in colunas_obrigatorias}
+        linhas_analisadas = 0
+        with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+            leitor = csv.reader(arquivo, delimiter=";")
+            next(leitor, None)
+            for numero_linha, valores in enumerate(leitor, start=2):
+                if not any(valor.strip() for valor in valores):
+                    continue
+                if len(valores) > len(colunas) and any(
+                    valor.strip() for valor in valores[len(colunas):]
+                ):
+                    raise ValueError(
+                        f"A linha {numero_linha} contém valores além das colunas do cabeçalho."
+                    )
+                valores = valores[:len(colunas)]
+                valores.extend([""] * (len(colunas) - len(valores)))
+                linhas_analisadas += 1
+
+                for nome_coluna in colunas_obrigatorias:
+                    indices = indices_colunas[nome_coluna.casefold()]
+                    if len(indices) != 1:
+                        continue
+
+                    valor = valores[indices[0]]
+                    if not valor.strip():
+                        continue
+
+                    chave_valor = self._normalizar_valor_unico(valor)
+                    ocorrencias = primeira_ocorrencia[nome_coluna]
+                    if chave_valor in ocorrencias:
+                        primeira_linha, valor_original = ocorrencias[chave_valor]
+                        problemas.append(
+                            f'Linha {numero_linha}, coluna "{nome_coluna}": valor '
+                            f'"{valor_original}" duplicado (primeira ocorrência na linha '
+                            f'{primeira_linha}).'
+                        )
+                    else:
+                        ocorrencias[chave_valor] = (numero_linha, valor)
+
+        return linhas_analisadas, problemas
+
+    def importar_dados_csv(self):
+        # Solicita destino e arquivo antes de preparar os registros.
+        if not self._exigir_configuracao():
+            return
+
+        nome_tabela = simpledialog.askstring(
+            "Tabela de destino",
+            "Informe a tabela onde os dados serão inseridos (ou esquema.tabela):",
+            initialvalue="produto",
+            parent=self.root,
+        )
+        if nome_tabela is None:
+            LOGGER.info("Importação CSV cancelada antes da escolha da tabela.")
+            return
+
+        partes_tabela = [parte.strip() for parte in nome_tabela.split(".")]
+        if not partes_tabela[0] or len(partes_tabela) > 2 or any(not parte for parte in partes_tabela):
+            messagebox.showerror(
+                "Tabela inválida",
+                "Informe o nome da tabela ou esquema.tabela.",
+                parent=self.root,
+            )
+            return
+        nome_tabela = ".".join(partes_tabela)
+        LOGGER.info("Importação CSV iniciada: tabela=%s.", nome_tabela)
+
+        caminho = filedialog.askopenfilename(
+            parent=self.root,
+            title="Selecionar arquivo CSV para importar",
+            filetypes=[("Arquivos CSV", "*.csv"), ("Todos os arquivos", "*.*")],
+        )
+        if not caminho:
+            LOGGER.info("Seleção de arquivo CSV cancelada.")
+            return
+        LOGGER.info("Arquivo CSV selecionado: arquivo=%s.", Path(caminho).name)
+
+        try:
+            with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+                leitor = csv.reader(arquivo, delimiter=";")
+                cabecalho = next(leitor, None)
+        except (OSError, UnicodeError, csv.Error) as erro:
+            LOGGER.error("Falha ao ler CSV (%s).", type(erro).__name__)
+            messagebox.showerror("Erro ao ler CSV", str(erro), parent=self.root)
+            return
+
+        if not cabecalho or not any(coluna.strip() for coluna in cabecalho):
+            LOGGER.warning("Importação CSV cancelada: cabeçalho vazio.")
+            messagebox.showerror(
+                "Arquivo vazio",
+                "O arquivo CSV não contém nomes de colunas na primeira linha.",
+                parent=self.root,
+            )
+            return
+
+        colunas = [coluna.strip() for coluna in cabecalho]
+        if any(not coluna for coluna in colunas):
+            LOGGER.warning("Importação CSV cancelada: há coluna sem nome.")
+            messagebox.showerror(
+                "Cabeçalho inválido",
+                "Todas as colunas da primeira linha precisam ter um nome.",
+                parent=self.root,
+            )
+            return
+        if len(set(colunas)) != len(colunas):
+            LOGGER.warning("Importação CSV cancelada: há nomes de coluna duplicados.")
+            messagebox.showerror(
+                "Cabeçalho inválido",
+                "A primeira linha contém nomes de coluna duplicados.",
+                parent=self.root,
+            )
+            return
+
+        try:
+            linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(caminho, colunas)
+        except (OSError, UnicodeError, csv.Error, ValueError) as erro:
+            LOGGER.error("Falha na análise prévia do CSV (%s).", type(erro).__name__)
+            messagebox.showerror("Erro na análise do CSV", str(erro), parent=self.root)
+            return
+
+        if problemas:
+            conteudo_relatorio = [
+                "RELATORIO DE VALIDACAO DA IMPORTACAO CSV",
+                f"Data e hora: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"Arquivo: {Path(caminho).name}",
+                f"Tabela de destino: {nome_tabela}",
+                f"Linhas com dados analisadas: {linhas_analisadas}",
+                f"Problemas encontrados: {len(problemas)}",
+                "",
+                "DETALHES",
+                *[f"- {problema}" for problema in problemas],
+            ]
+            try:
+                ARQUIVO_RELATORIO_VALIDACAO.write_text(
+                    "\n".join(conteudo_relatorio) + "\n",
+                    encoding="utf-8",
+                )
+            except OSError as erro:
+                LOGGER.error("Falha ao salvar relatório de validação (%s).", type(erro).__name__)
+                messagebox.showerror(
+                    "Erro ao salvar relatório",
+                    f"Não foi possível salvar o relatório:\n{erro}",
+                    parent=self.root,
+                )
+                return
+
+            LOGGER.warning(
+                "Importação bloqueada pela validação: tabela=%s problemas=%s relatório=%s.",
+                nome_tabela,
+                len(problemas),
+                ARQUIVO_RELATORIO_VALIDACAO.name,
+            )
+            messagebox.showerror(
+                "CSV reprovado na validação",
+                f"Foram encontrados {len(problemas)} problema(s) nas colunas "
+                "codigo e codigo_Barra. A importação foi cancelada.\n\n"
+                f"Relatório salvo em:\n{ARQUIVO_RELATORIO_VALIDACAO}",
+                parent=self.root,
+            )
+            return
+
+        LOGGER.info(
+            "Validação do CSV concluída: tabela=%s linhas=%s.",
+            nome_tabela,
+            linhas_analisadas,
+        )
+        confirmar = messagebox.askyesno(
+            "Confirmar importação",
+            f"Colunas lidas da primeira linha:\n{', '.join(colunas)}\n\n"
+            f"Inserir os registros na tabela '{nome_tabela}'?",
+            parent=self.root,
+        )
+        if not confirmar:
+            LOGGER.info("Importação CSV cancelada na confirmação: tabela=%s.", nome_tabela)
+            return
+
+        consulta_insert = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
+            sql.Identifier(*partes_tabela),
+            sql.SQL(", ").join(sql.Identifier(coluna) for coluna in colunas),
+            sql.SQL(", ").join(sql.Placeholder() for _ in colunas),
+        )
+        linhas_importadas = 0
+
+        def ler_linhas():
+            nonlocal linhas_importadas
+            with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+                leitor = csv.reader(arquivo, delimiter=";")
+                next(leitor, None)
+                for numero_linha, valores in enumerate(leitor, start=2):
+                    if not any(valor.strip() for valor in valores):
+                        continue
+                    if len(valores) > len(colunas) and any(
+                        valor.strip() for valor in valores[len(colunas):]
+                    ):
+                        raise ValueError(
+                            f"A linha {numero_linha} contém valores além das colunas do cabeçalho."
+                        )
+                    valores = valores[:len(colunas)]
+                    valores.extend([""] * (len(colunas) - len(valores)))
+                    linhas_importadas += 1
+                    yield [valor if valor != "" else None for valor in valores]
+
+        try:
+            with psycopg.connect(**self.configuracao, connect_timeout=5) as conexao:
+                with conexao.cursor() as cursor:
+                    cursor.executemany(consulta_insert, ler_linhas())
+        except (psycopg.Error, OSError, UnicodeError, csv.Error, ValueError) as erro:
+            self.status.set("Falha ao importar o CSV.")
+            LOGGER.error(
+                "Importação CSV falhou: tabela=%s erro=%s.",
+                nome_tabela,
+                type(erro).__name__,
+            )
+            messagebox.showerror("Erro na importação", str(erro), parent=self.root)
+            return
+
+        LOGGER.info(
+            "Importação CSV concluída: tabela=%s registros=%s.",
+            nome_tabela,
+            linhas_importadas,
+        )
+        self.status.set(
+            f"Importação concluída: {linhas_importadas} registro(s) inserido(s) em {nome_tabela}."
+        )
+        messagebox.showinfo(
+            "Importação concluída",
+            f"{linhas_importadas} registro(s) inserido(s) na tabela '{nome_tabela}'.",
+            parent=self.root,
+        )
+
     def abrir_configuracao(self):
         # Abre o formulário modal usado para informar ou testar o acesso ao banco.
         janela = tk.Toplevel(self.root)
@@ -1067,7 +1320,7 @@ class ImportadorApp:
         return True
 
     def abrir_execucao_comandos(self):
-        # Cria a tela para executar SELECT, INSERT, UPDATE ou DELETE.
+        # Cria a tela para executar consultas SELECT.
         if not self._exigir_configuracao():
             return
 
@@ -1082,7 +1335,7 @@ class ImportadorApp:
         conteudo.pack(fill="both", expand=True)
         ttk.Label(
             conteudo,
-            text="Comandos permitidos: SELECT, INSERT, UPDATE e DELETE.",
+            text="Comando permitido: SELECT.",
         ).pack(anchor="w")
 
         editor = scrolledtext.ScrolledText(conteudo, height=7, wrap="none")
@@ -1143,30 +1396,20 @@ class ImportadorApp:
             messagebox.showwarning("Comando vazio", "Digite um comando SQL.", parent=parent)
             return
         comando = self._identificar_comando_sql(consulta)
-        if comando not in {"SELECT", "INSERT", "UPDATE", "DELETE"}:
+        if comando != "SELECT":
             LOGGER.warning("Comando SQL não permitido: tipo=%s.", comando or "desconhecido")
             messagebox.showerror(
                 "Comando não permitido",
-                "Este menu aceita somente SELECT, INSERT, UPDATE e DELETE.",
+                "Este menu aceita somente comandos SELECT.",
                 parent=parent,
             )
-            return
-
-        # Pede confirmação extra antes de executar comandos que alteram ou removem dados.
-        if comando in {"UPDATE", "DELETE"} and not messagebox.askyesno(
-            "Confirmar alteração",
-            f"O comando {comando} pode alterar ou remover dados. Deseja continuar?",
-            parent=parent,
-        ):
-            LOGGER.info("Execução do comando %s cancelada pelo usuário.", comando)
             return
 
         tabela.delete(*tabela.get_children())
         nomes_colunas = []
         linhas = []
-        registros_afetados = 0
 
-        # Executa dentro de uma transação; o contexto confirma ao terminar sem erro.
+        # A transação somente leitura também bloqueia SELECTs com efeitos de escrita.
         LOGGER.info("Comando SQL iniciado: tipo=%s.", comando)
         try:
             with psycopg.connect(**self.configuracao, connect_timeout=5) as conexao:
@@ -1175,8 +1418,8 @@ class ImportadorApp:
                     # cursor.execute("SELECT id, nome FROM sua_tabela LIMIT 20")
                     # resultado = cursor.fetchall()
 
+                    cursor.execute("SET TRANSACTION READ ONLY")
                     cursor.execute(consulta, prepare=True)
-                    registros_afetados = max(cursor.rowcount, 0)
                     if cursor.description is None:
                         nomes_colunas = []
                     else:
@@ -1187,24 +1430,6 @@ class ImportadorApp:
             LOGGER.error("Comando SQL falhou: tipo=%s erro=%s.", comando, type(erro).__name__)
             messagebox.showerror("Erro no comando", str(erro), parent=parent)
             return
-
-        # Confirma operações de escrita somente depois que a transação foi concluída.
-        if comando in {"INSERT", "UPDATE", "DELETE"}:
-            LOGGER.info(
-                "Comando SQL concluído: tipo=%s registros_afetados=%s.",
-                comando,
-                registros_afetados,
-            )
-            status.set(
-                f"{comando} realizado com sucesso; "
-                f"{registros_afetados} registro(s) afetado(s)."
-            )
-            messagebox.showinfo(
-                "Comando realizado com sucesso",
-                f"O comando {comando} foi realizado com sucesso.\n"
-                f"Registros afetados: {registros_afetados}.",
-                parent=parent,
-            )
 
         # Comandos sem retorno de colunas terminam após atualizar o status.
         if not nomes_colunas:
