@@ -1,4 +1,5 @@
 import csv
+import hmac
 import os
 import re
 import logging
@@ -42,6 +43,59 @@ if not LOGGER.handlers:
 
 # Carrega as variáveis locais do arquivo .env sem versionar credenciais.
 load_dotenv()
+
+USUARIO_LOGIN = "master"
+
+
+def senha_login_atual():
+    # Senha = hora + minuto do relógio do computador no momento da conferência.
+    agora = datetime.now()
+    return str(agora.hour + agora.minute)
+
+
+def solicitar_login():
+    # Exibe a tela de login e retorna o usuário autenticado, ou None se a janela for fechada.
+    janela = tk.Tk()
+    janela.title("Login - Importador")
+    janela.resizable(False, False)
+    resultado = {"usuario": None}
+    usuario = tk.StringVar()
+    senha = tk.StringVar()
+    mensagem = tk.StringVar()
+
+    def entrar(_evento=None):
+        nome = usuario.get().strip().casefold()
+        senha_informada = senha.get().strip()
+        if nome == USUARIO_LOGIN and hmac.compare_digest(
+            senha_informada.encode("utf-8"), senha_login_atual().encode("utf-8")
+        ):
+            resultado["usuario"] = nome
+            LOGGER.info("Login realizado: usuario=%s.", nome)
+            janela.destroy()
+            return
+
+        LOGGER.warning("Falha de login: usuario=%s.", nome or "vazio")
+        senha.set("")
+        mensagem.set("Usuário ou senha inválidos.")
+
+    formulario = ttk.Frame(janela, padding=20)
+    formulario.pack()
+    ttk.Label(formulario, text="Usuário").grid(row=0, column=0, sticky="w", pady=4)
+    campo_usuario = ttk.Entry(formulario, textvariable=usuario, width=24)
+    campo_usuario.grid(row=0, column=1, padx=(10, 0), pady=4)
+    ttk.Label(formulario, text="Senha").grid(row=1, column=0, sticky="w", pady=4)
+    campo_senha = ttk.Entry(formulario, textvariable=senha, show="*", width=24)
+    campo_senha.grid(row=1, column=1, padx=(10, 0), pady=4)
+    ttk.Label(formulario, textvariable=mensagem, foreground="#b00020").grid(
+        row=2, column=0, columnspan=2, pady=(4, 0)
+    )
+    ttk.Button(formulario, text="Entrar", command=entrar).grid(
+        row=3, column=0, columnspan=2, pady=(10, 0)
+    )
+    janela.bind("<Return>", entrar)
+    campo_usuario.focus_set()
+    janela.mainloop()
+    return resultado["usuario"]
 
 
 # Reúne a janela principal, os menus e as operações com o PostgreSQL.
@@ -1103,6 +1157,14 @@ class ImportadorApp:
             )
             return
 
+        # Para produto, inclui a origem padrão da importação na coluna info.
+        incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
+        colunas_insert = list(colunas)
+        indice_info = colunas_insert.index("info") if "info" in colunas_insert else None
+        if incluir_info_padrao and indice_info is None:
+            indice_info = len(colunas_insert)
+            colunas_insert.append("info")
+
         LOGGER.info(
             "Validação do CSV concluída: tabela=%s linhas=%s.",
             nome_tabela,
@@ -1110,7 +1172,7 @@ class ImportadorApp:
         )
         confirmar = messagebox.askyesno(
             "Confirmar importação",
-            f"Colunas lidas da primeira linha:\n{', '.join(colunas)}\n\n"
+            f"Colunas do INSERT:\n{', '.join(colunas_insert)}\n\n"
             f"Inserir os registros na tabela '{nome_tabela}'?",
             parent=self.root,
         )
@@ -1120,8 +1182,8 @@ class ImportadorApp:
 
         consulta_insert = sql.SQL("INSERT INTO {} ({}) VALUES ({})").format(
             sql.Identifier(*partes_tabela),
-            sql.SQL(", ").join(sql.Identifier(coluna) for coluna in colunas),
-            sql.SQL(", ").join(sql.Placeholder() for _ in colunas),
+            sql.SQL(", ").join(sql.Identifier(coluna) for coluna in colunas_insert),
+            sql.SQL(", ").join(sql.Placeholder() for _ in colunas_insert),
         )
         linhas_importadas = 0
 
@@ -1141,6 +1203,11 @@ class ImportadorApp:
                         )
                     valores = valores[:len(colunas)]
                     valores.extend([""] * (len(colunas) - len(valores)))
+                    if incluir_info_padrao:
+                        if indice_info < len(valores):
+                            valores[indice_info] = "Importado via importador AS."
+                        else:
+                            valores.append("Importado via importador AS")
                     linhas_importadas += 1
                     yield [valor if valor != "" else None for valor in valores]
 
@@ -1508,6 +1575,9 @@ class ImportadorApp:
 # Cria a janela principal apenas quando este arquivo é executado diretamente.
 if __name__ == "__main__":
     try:
+        if solicitar_login() is None:
+            LOGGER.info("Aplicativo encerrado sem login.")
+            sys.exit(0)
         janela_principal = tk.Tk()
         app = ImportadorApp(janela_principal)
         janela_principal.mainloop()

@@ -38,6 +38,8 @@ Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. A
 
 Todos os `INSERT`s do CSV são feitos na mesma transação: em caso de erro, a transação é revertida. Arquivos com BOM UTF-8 são aceitos; células vazias são importadas como `NULL`.
 
+Ao importar para a tabela `produto`, a coluna `info` recebe `importado via importador AS`. Esse valor é adicionado ao `INSERT` quando a coluna não está no cabeçalho e substitui o valor do arquivo quando ela já existe.
+
 ## Consultas e exportação
 
 As telas **Obter dados > PostgreSQL** e **Obter dados > SQL Server** recebem os dados de conexão e uma tabela (ou `esquema.tabela`), executam `SELECT *` e mostram até 1.000 linhas na grade. O botão **Salvar resultado em Excel...** exporta o resultado consultado para `.xlsx`, respeitando o limite de linhas do formato.
