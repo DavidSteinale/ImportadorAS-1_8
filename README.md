@@ -1,6 +1,10 @@
 # Importador de Dados
 
-Aplicativo desktop para consultar e importar dados do PostgreSQL e consultar o Microsoft SQL Server. Versão Beta 1.4.
+Aplicativo desktop para consultar e importar dados do PostgreSQL e consultar o Microsoft SQL Server. Versão Beta 1.5.
+
+## Login
+
+Ao abrir o aplicativo, a tela de login (centralizada na área de trabalho) solicita somente a senha, que é a soma da hora e dos minutos do relógio do computador no momento do clique em **Entrar** (às 10:35, a senha é `45`). Não há limite de tentativas. Logins e falhas são gravados em `importador.txt` com o usuário `master`; a senha digitada não é gravada.
 
 ## Menus
 

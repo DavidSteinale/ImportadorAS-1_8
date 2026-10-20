@@ -53,47 +53,49 @@ def senha_login_atual():
     return str(agora.hour + agora.minute)
 
 
+def centralizar_janela(janela, largura, altura):
+    posicao_x = (janela.winfo_screenwidth() - largura) // 2
+    posicao_y = (janela.winfo_screenheight() - altura) // 2
+    janela.geometry(f"{largura}x{altura}+{posicao_x}+{posicao_y}")
+
+
 def solicitar_login():
     # Exibe a tela de login e retorna o usuário autenticado, ou None se a janela for fechada.
     janela = tk.Tk()
     janela.title("Login - Importador")
     janela.resizable(False, False)
     resultado = {"usuario": None}
-    usuario = tk.StringVar()
     senha = tk.StringVar()
     mensagem = tk.StringVar()
 
     def entrar(_evento=None):
-        nome = usuario.get().strip().casefold()
-        senha_informada = senha.get().strip()
-        if nome == USUARIO_LOGIN and hmac.compare_digest(
-            senha_informada.encode("utf-8"), senha_login_atual().encode("utf-8")
+        if hmac.compare_digest(
+            senha.get().strip().encode("utf-8"), senha_login_atual().encode("utf-8")
         ):
-            resultado["usuario"] = nome
-            LOGGER.info("Login realizado: usuario=%s.", nome)
+            resultado["usuario"] = USUARIO_LOGIN
+            LOGGER.info("Login realizado: usuario=%s.", USUARIO_LOGIN)
             janela.destroy()
             return
 
-        LOGGER.warning("Falha de login: usuario=%s.", nome or "vazio")
+        LOGGER.warning("Falha de login: usuario=%s.", USUARIO_LOGIN)
         senha.set("")
-        mensagem.set("Usuário ou senha inválidos.")
+        mensagem.set("Senha inválida.")
 
     formulario = ttk.Frame(janela, padding=20)
     formulario.pack()
-    ttk.Label(formulario, text="Usuário").grid(row=0, column=0, sticky="w", pady=4)
-    campo_usuario = ttk.Entry(formulario, textvariable=usuario, width=24)
-    campo_usuario.grid(row=0, column=1, padx=(10, 0), pady=4)
-    ttk.Label(formulario, text="Senha").grid(row=1, column=0, sticky="w", pady=4)
+    ttk.Label(formulario, text="Senha").grid(row=0, column=0, sticky="w", pady=4)
     campo_senha = ttk.Entry(formulario, textvariable=senha, show="*", width=24)
-    campo_senha.grid(row=1, column=1, padx=(10, 0), pady=4)
+    campo_senha.grid(row=0, column=1, padx=(10, 0), pady=4)
     ttk.Label(formulario, textvariable=mensagem, foreground="#b00020").grid(
-        row=2, column=0, columnspan=2, pady=(4, 0)
+        row=1, column=0, columnspan=2, pady=(4, 0)
     )
     ttk.Button(formulario, text="Entrar", command=entrar).grid(
-        row=3, column=0, columnspan=2, pady=(10, 0)
+        row=2, column=0, columnspan=2, pady=(10, 0)
     )
     janela.bind("<Return>", entrar)
-    campo_usuario.focus_set()
+    janela.update_idletasks()
+    centralizar_janela(janela, janela.winfo_reqwidth(), janela.winfo_reqheight())
+    campo_senha.focus_set()
     janela.mainloop()
     return resultado["usuario"]
 
@@ -104,7 +106,7 @@ class ImportadorApp:
         # Prepara a janela, o estado da conexão e os elementos da tela inicial.
         self.root = root
         self.root.title("Importador")
-        self.root.geometry("600x340")
+        centralizar_janela(self.root, 600, 340)
         self.root.minsize(460, 260)
         self.configuracao = None
         self.configuracao_sqlserver = None
@@ -167,7 +169,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador de dados para PostgreSQL.\nVersão Beta 1.4",
+                "Importador de dados para PostgreSQL.\nVersão Beta 1.6",
                 parent=self.root,
             ),
         )
@@ -1207,7 +1209,7 @@ class ImportadorApp:
                         if indice_info < len(valores):
                             valores[indice_info] = "Importado via importador AS."
                         else:
-                            valores.append("Importado via importador AS")
+                            valores.append("Importado via importador AS.")
                     linhas_importadas += 1
                     yield [valor if valor != "" else None for valor in valores]
 
