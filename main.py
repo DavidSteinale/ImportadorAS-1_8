@@ -5,6 +5,7 @@ import re
 import logging
 import sys
 import tkinter as tk
+import unicodedata
 from contextlib import closing
 from datetime import date, datetime, time, timedelta
 from decimal import Decimal
@@ -169,7 +170,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador de dados para PostgreSQL.\nVersão Beta 1.6",
+                "Importador de dados para PostgreSQL.\nVersão Beta 1.7",
                 parent=self.root,
             ),
         )
@@ -1039,6 +1040,186 @@ class ImportadorApp:
 
         return linhas_analisadas, problemas
 
+    @staticmethod
+    def _caracteres_acentuados(texto):
+        texto = unicodedata.normalize("NFC", texto)
+        return sorted({
+            caractere
+            for caractere in texto
+            if caractere.isalpha()
+            and any(
+                unicodedata.combining(parte)
+                for parte in unicodedata.normalize("NFD", caractere)
+            )
+        })
+
+    @staticmethod
+    def _normalizar_texto_csv(texto):
+        sem_acentos = "".join(
+            caractere
+            for caractere in unicodedata.normalize("NFD", texto)
+            if not unicodedata.combining(caractere)
+        )
+        return sem_acentos.upper()
+
+    def _criar_csv_normalizado(self, caminho):
+        origem = Path(caminho)
+        destino = origem.with_name(f"{origem.stem}_sem_acentos{origem.suffix}")
+        indice = 2
+        while destino.exists():
+            destino = origem.with_name(
+                f"{origem.stem}_sem_acentos_{indice}{origem.suffix}"
+            )
+            indice += 1
+
+        try:
+            with open(origem, "r", encoding="utf-8-sig", newline="") as arquivo_origem:
+                leitor = csv.reader(arquivo_origem, delimiter=";")
+                with open(destino, "x", encoding="utf-8-sig", newline="") as arquivo_destino:
+                    escritor = csv.writer(arquivo_destino, delimiter=";")
+                    for numero_linha, valores in enumerate(leitor, start=1):
+                        if numero_linha > 1:
+                            valores = [self._normalizar_texto_csv(valor) for valor in valores]
+                        escritor.writerow(valores)
+        except (OSError, UnicodeError, csv.Error):
+            try:
+                destino.unlink(missing_ok=True)
+            except OSError:
+                pass
+            raise
+
+        LOGGER.info(
+            "Cópia CSV normalizada criada: arquivo=%s.",
+            destino.name,
+        )
+        return str(destino)
+
+    def _localizar_acentos_csv(self, caminho):
+        ocorrencias = []
+        with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+            for numero_linha, linha in enumerate(arquivo, start=1):
+                caracteres = self._caracteres_acentuados(linha)
+                if caracteres:
+                    trecho = " ".join(linha.strip().split())
+                    trecho = "".join(
+                        caractere if caractere.isprintable() else " "
+                        for caractere in trecho
+                    )
+                    ocorrencias.append((numero_linha, caracteres, trecho))
+        return ocorrencias
+
+    def _revisar_acentos_csv(self, caminho):
+        try:
+            ocorrencias = self._localizar_acentos_csv(caminho)
+        except (OSError, UnicodeError) as erro:
+            LOGGER.error("Falha ao verificar acentos no CSV (%s).", type(erro).__name__)
+            messagebox.showerror("Erro ao verificar CSV", str(erro), parent=self.root)
+            return None
+
+        janela = tk.Toplevel(self.root)
+        janela.title("Revisar acentos no CSV")
+        janela.geometry("900x500")
+        janela.minsize(680, 360)
+        janela.transient(self.root)
+        resultado = {"continuar": False, "caminho": caminho}
+
+        if ocorrencias:
+            texto = (
+                f"Foram encontrados acentos ou cedilha em {len(ocorrencias)} linha(s). "
+                "Confira antes de continuar. O cabeçalho será preservado."
+            )
+        else:
+            texto = "Nenhum caractere acentuado ou cedilha foi encontrado. O cabeçalho será preservado."
+        rotulo_status = ttk.Label(janela, text=texto, padding=(12, 12, 12, 8))
+        rotulo_status.pack(anchor="w")
+
+        area = ttk.Frame(janela, padding=(12, 0, 12, 8))
+        area.pack(fill="both", expand=True)
+        colunas = ("linha", "caracteres", "conteudo")
+        tabela = ttk.Treeview(area, columns=colunas, show="headings")
+        tabela.heading("linha", text="Linha")
+        tabela.heading("caracteres", text="Caracteres encontrados")
+        tabela.heading("conteudo", text="Conteúdo da linha")
+        tabela.column("linha", width=70, minwidth=60, stretch=False, anchor="center")
+        tabela.column("caracteres", width=180, minwidth=140, stretch=False)
+        tabela.column("conteudo", width=560, minwidth=260, stretch=True)
+        rolagem_vertical = ttk.Scrollbar(area, orient="vertical", command=tabela.yview)
+        rolagem_horizontal = ttk.Scrollbar(area, orient="horizontal", command=tabela.xview)
+        tabela.configure(
+            yscrollcommand=rolagem_vertical.set,
+            xscrollcommand=rolagem_horizontal.set,
+        )
+        tabela.grid(row=0, column=0, sticky="nsew")
+        rolagem_vertical.grid(row=0, column=1, sticky="ns")
+        rolagem_horizontal.grid(row=1, column=0, sticky="ew")
+        area.rowconfigure(0, weight=1)
+        area.columnconfigure(0, weight=1)
+        def atualizar_lista():
+            tabela.delete(*tabela.get_children())
+            for numero_linha, caracteres, trecho in ocorrencias:
+                tabela.insert(
+                    "",
+                    "end",
+                    values=(numero_linha, " ".join(caracteres), trecho),
+                )
+
+        atualizar_lista()
+
+        botoes = ttk.Frame(janela, padding=(12, 0, 12, 12))
+        botoes.pack(fill="x")
+
+        def fechar(permitir_importacao=False):
+            resultado["continuar"] = permitir_importacao
+            janela.destroy()
+
+        botao_corrigir = ttk.Button(
+            botoes,
+            text="Remover acentos e converter para MAIÚSCULAS",
+        )
+        botao_corrigir.pack(side="left")
+
+        def corrigir_arquivo():
+            try:
+                novo_caminho = self._criar_csv_normalizado(resultado["caminho"])
+                novas_ocorrencias = self._localizar_acentos_csv(novo_caminho)
+            except (OSError, UnicodeError, csv.Error) as erro:
+                LOGGER.error("Falha ao normalizar CSV (%s).", type(erro).__name__)
+                messagebox.showerror(
+                    "Erro ao corrigir CSV", str(erro), parent=janela
+                )
+                return
+
+            resultado["caminho"] = novo_caminho
+            ocorrencias[:] = novas_ocorrencias
+            atualizar_lista()
+            rotulo_status.configure(
+                text=(
+                    f"Cópia corrigida: {Path(novo_caminho).name}. "
+                    "O cabeçalho foi preservado para manter os nomes das colunas."
+                )
+            )
+            botao_corrigir.configure(state="disabled")
+
+        botao_corrigir.configure(command=corrigir_arquivo)
+        ttk.Button(
+            botoes,
+            text="Cancelar",
+            command=lambda: fechar(),
+        ).pack(side="right")
+        ttk.Button(
+            botoes,
+            text="Continuar com a importação",
+            command=lambda: fechar(True),
+        ).pack(side="right", padx=(0, 8))
+        janela.protocol("WM_DELETE_WINDOW", lambda: fechar())
+        janela.update_idletasks()
+        centralizar_janela(janela, 900, 500)
+        janela.grab_set()
+        janela.wait_window()
+        if resultado["continuar"]:
+            return resultado["caminho"]
+        return None
+
     def importar_dados_csv(self):
         # Solicita destino e arquivo antes de preparar os registros.
         if not self._exigir_configuracao():
@@ -1158,6 +1339,12 @@ class ImportadorApp:
                 parent=self.root,
             )
             return
+
+        caminho_revisado = self._revisar_acentos_csv(caminho)
+        if caminho_revisado is None:
+            LOGGER.info("Importação CSV cancelada na revisão de acentos.")
+            return
+        caminho = caminho_revisado
 
         # Para produto, inclui a origem padrão da importação na coluna info.
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
