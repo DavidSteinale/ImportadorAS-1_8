@@ -1043,6 +1043,30 @@ class ImportadorApp:
 
         return linhas_analisadas, problemas
 
+    # Início do bloco de recuperação de texto UTF-8 previamente decodificado incorretamente.
+    @staticmethod
+    def _corrigir_mojibake(texto):
+        def pontuar(valor):
+            return sum(
+                caractere in "ÃÂ�" or "\x80" <= caractere <= "\x9f"
+                for caractere in valor
+            )
+
+        pontuacao_original = pontuar(texto)
+        if not pontuacao_original:
+            return texto
+
+        for codificacao in ("cp1252", "latin-1"):
+            try:
+                candidato = texto.encode(codificacao).decode("utf-8")
+            except (UnicodeEncodeError, UnicodeDecodeError):
+                continue
+            if pontuar(candidato) < pontuacao_original:
+                return candidato
+        return texto
+
+    # Fim do bloco de recuperação de texto UTF-8 previamente decodificado incorretamente.
+    # Início do bloco de revisão de acentos e caracteres especiais.
     # Revisa caracteres acentuados e permite normalizar uma cópia do CSV.
     @staticmethod
     def _caracteres_acentuados(texto):
@@ -1057,15 +1081,37 @@ class ImportadorApp:
             )
         })
 
+    # Início do bloco de detecção e normalização de caracteres especiais.
+    @staticmethod
+    def _caracteres_especiais(texto):
+        texto = unicodedata.normalize("NFC", texto)
+        return sorted({
+            caractere
+            for caractere in texto
+            if caractere not in "-.+,@"
+            and not caractere.isalnum()
+            and not caractere.isspace()
+        })
+
     @staticmethod
     def _normalizar_texto_csv(texto):
-        sem_acentos = "".join(
-            caractere
-            for caractere in unicodedata.normalize("NFD", texto)
-            if not unicodedata.combining(caractere)
-        )
-        return sem_acentos.upper()
+        texto = ImportadorApp._corrigir_mojibake(texto)
+        texto = texto.replace("ç", "c").replace("Ç", "C")
+        resultado = []
+        for caractere in unicodedata.normalize("NFD", texto):
+            if unicodedata.combining(caractere):
+                continue
+            if (
+                caractere.isalnum()
+                or caractere.isspace()
+                or caractere in "-.+,@"
+            ):
+                resultado.append(caractere.upper())
+            else:
+                resultado.append(" ")
+        return "".join(resultado)
 
+    # Fim do bloco de detecção e normalização de caracteres especiais.
     def _criar_csv_normalizado(self, caminho):
         origem = Path(caminho)
         destino = origem.with_name(f"{origem.stem}_sem_acentos{origem.suffix}")
@@ -1098,30 +1144,42 @@ class ImportadorApp:
         )
         return str(destino)
 
+    # Início do bloco de varredura das linhas de dados, ignorando o cabeçalho.
     def _localizar_acentos_csv(self, caminho):
         ocorrencias = []
         with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
-            for numero_linha, linha in enumerate(arquivo, start=1):
-                caracteres = self._caracteres_acentuados(linha)
-                if caracteres:
-                    trecho = " ".join(linha.strip().split())
-                    trecho = "".join(
-                        caractere if caractere.isprintable() else " "
-                        for caractere in trecho
-                    )
-                    ocorrencias.append((numero_linha, caracteres, trecho))
+            leitor = csv.reader(arquivo, delimiter=";")
+            for numero_registro, valores in enumerate(leitor, start=1):
+                if numero_registro == 1:
+                    continue
+                valores = [self._corrigir_mojibake(valor) for valor in valores]
+                numero_linha = leitor.line_num
+                acentos = sorted({
+                    caractere
+                    for valor in valores
+                    for caractere in self._caracteres_acentuados(valor)
+                })
+                especiais = sorted({
+                    caractere
+                    for valor in valores
+                    for caractere in self._caracteres_especiais(valor)
+                })
+                if acentos or especiais:
+                    trecho = " ; ".join(" ".join(valor.split()) for valor in valores)
+                    ocorrencias.append((numero_linha, acentos, especiais, trecho))
         return ocorrencias
 
+    # Fim do bloco de varredura das linhas de dados, ignorando o cabeçalho.
     def _revisar_acentos_csv(self, caminho):
         try:
             ocorrencias = self._localizar_acentos_csv(caminho)
-        except (OSError, UnicodeError) as erro:
+        except (OSError, UnicodeError, csv.Error) as erro:
             LOGGER.error("Falha ao verificar acentos no CSV (%s).", type(erro).__name__)
             messagebox.showerror("Erro ao verificar CSV", str(erro), parent=self.root)
             return None
 
         janela = tk.Toplevel(self.root)
-        janela.title("Revisar acentos no CSV")
+        janela.title("Ajuste de informações")
         janela.geometry("900x500")
         janela.minsize(680, 360)
         janela.transient(self.root)
@@ -1129,24 +1187,30 @@ class ImportadorApp:
 
         if ocorrencias:
             texto = (
-                f"Foram encontrados acentos ou cedilha em {len(ocorrencias)} linha(s). "
-                "Confira antes de continuar. O cabeçalho será preservado."
+                f"Foram encontrados acentos ou caracteres especiais em "
+                f"{len(ocorrencias)} linha(s). Confira antes de continuar. "
+                "O cabeçalho será preservado."
             )
         else:
-            texto = "Nenhum caractere acentuado ou cedilha foi encontrado. O cabeçalho será preservado."
+            texto = (
+                "Nenhum caractere acentuado ou especial foi encontrado. "
+                "O cabeçalho será preservado."
+            )
         rotulo_status = ttk.Label(janela, text=texto, padding=(12, 12, 12, 8))
         rotulo_status.pack(anchor="w")
 
         area = ttk.Frame(janela, padding=(12, 0, 12, 8))
         area.pack(fill="both", expand=True)
-        colunas = ("linha", "caracteres", "conteudo")
+        colunas = ("linha", "acentos", "especiais", "conteudo")
         tabela = ttk.Treeview(area, columns=colunas, show="headings")
         tabela.heading("linha", text="Linha")
-        tabela.heading("caracteres", text="Caracteres encontrados")
+        tabela.heading("acentos", text="Acentos")
+        tabela.heading("especiais", text="Caracteres especiais")
         tabela.heading("conteudo", text="Conteúdo da linha")
         tabela.column("linha", width=70, minwidth=60, stretch=False, anchor="center")
-        tabela.column("caracteres", width=180, minwidth=140, stretch=False)
-        tabela.column("conteudo", width=560, minwidth=260, stretch=True)
+        tabela.column("acentos", width=130, minwidth=100, stretch=False)
+        tabela.column("especiais", width=150, minwidth=120, stretch=False)
+        tabela.column("conteudo", width=460, minwidth=220, stretch=True)
         rolagem_vertical = ttk.Scrollbar(area, orient="vertical", command=tabela.yview)
         rolagem_horizontal = ttk.Scrollbar(area, orient="horizontal", command=tabela.xview)
         tabela.configure(
@@ -1160,11 +1224,16 @@ class ImportadorApp:
         area.columnconfigure(0, weight=1)
         def atualizar_lista():
             tabela.delete(*tabela.get_children())
-            for numero_linha, caracteres, trecho in ocorrencias:
+            for numero_linha, acentos, especiais, trecho in ocorrencias:
                 tabela.insert(
                     "",
                     "end",
-                    values=(numero_linha, " ".join(caracteres), trecho),
+                    values=(
+                        numero_linha,
+                        " ".join(acentos),
+                        " ".join(especiais),
+                        trecho,
+                    ),
                 )
 
         atualizar_lista()
@@ -1347,7 +1416,7 @@ class ImportadorApp:
 
         caminho_revisado = self._revisar_acentos_csv(caminho)
         if caminho_revisado is None:
-            LOGGER.info("Importação CSV cancelada na revisão de acentos.")
+            LOGGER.info("Importação CSV cancelada na revisão de caracteres.")
             return
         caminho = caminho_revisado
 
@@ -1384,6 +1453,7 @@ class ImportadorApp:
 
         def ler_linhas():
             nonlocal linhas_importadas
+            # Início do bloco de leitura do CSV em UTF-8 para o INSERT.
             with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
                 leitor = csv.reader(arquivo, delimiter=";")
                 next(leitor, None)
@@ -1406,12 +1476,25 @@ class ImportadorApp:
                             valores.append("Importado via importador AS.")
                     # Fim do bloco que marca cada linha importada para produto.
                     linhas_importadas += 1
-                    yield [valor if valor != "" else None for valor in valores]
+                    # Início do bloco de conversão para maiúsculas antes do INSERT.
+                    valores_para_inserir = [
+                        self._corrigir_mojibake(valor).upper() if valor else None
+                        for valor in valores
+                    ]
+                    yield valores_para_inserir
+                    # Fim do bloco de conversão para maiúsculas antes do INSERT.
+            # Fim do bloco de leitura do CSV em UTF-8 para o INSERT.
 
         try:
-            with psycopg.connect(**self.configuracao, connect_timeout=5) as conexao:
+            # Início do bloco que envia os valores em UTF-8 ao INSERT.
+            with psycopg.connect(
+                **self.configuracao,
+                connect_timeout=5,
+                client_encoding="UTF8",
+            ) as conexao:
                 with conexao.cursor() as cursor:
                     cursor.executemany(consulta_insert, ler_linhas())
+            # Fim do bloco que envia os valores em UTF-8 ao INSERT.
         except (psycopg.Error, OSError, UnicodeError, csv.Error, ValueError) as erro:
             self.status.set("Falha ao importar o CSV.")
             LOGGER.error(
