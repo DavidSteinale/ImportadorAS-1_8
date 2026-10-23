@@ -45,6 +45,7 @@ if not LOGGER.handlers:
 # Carrega as variáveis locais do arquivo .env sem versionar credenciais.
 load_dotenv()
 
+# Início do bloco de login e centralização das janelas.
 USUARIO_LOGIN = "master"
 
 
@@ -101,6 +102,7 @@ def solicitar_login():
     return resultado["usuario"]
 
 
+# Fim do bloco de login e centralização das janelas.
 # Reúne a janela principal, os menus e as operações com o PostgreSQL.
 class ImportadorApp:
     def __init__(self, root):
@@ -981,6 +983,7 @@ class ImportadorApp:
 
     """
 
+    # Início do bloco de importação e validação de arquivos CSV.
     def _analisar_colunas_unicas_csv(self, caminho, colunas):
         # Valida a presença e a unicidade dos valores em codigo e codigo_Barra.
         colunas_obrigatorias = ("codigo", "codigo_Barra")
@@ -1040,6 +1043,7 @@ class ImportadorApp:
 
         return linhas_analisadas, problemas
 
+    # Revisa caracteres acentuados e permite normalizar uma cópia do CSV.
     @staticmethod
     def _caracteres_acentuados(texto):
         texto = unicodedata.normalize("NFC", texto)
@@ -1174,7 +1178,7 @@ class ImportadorApp:
 
         botao_corrigir = ttk.Button(
             botoes,
-            text="Remover acentos e converter para MAIÚSCULAS",
+            text="Ajuste automático",
         )
         botao_corrigir.pack(side="left")
 
@@ -1220,6 +1224,7 @@ class ImportadorApp:
             return resultado["caminho"]
         return None
 
+    # Fim do bloco de revisão e normalização de acentos no CSV.
     def importar_dados_csv(self):
         # Solicita destino e arquivo antes de preparar os registros.
         if not self._exigir_configuracao():
@@ -1346,13 +1351,14 @@ class ImportadorApp:
             return
         caminho = caminho_revisado
 
-        # Para produto, inclui a origem padrão da importação na coluna info.
+        # Início do bloco que prepara a coluna info de produto.
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
         colunas_insert = list(colunas)
         indice_info = colunas_insert.index("info") if "info" in colunas_insert else None
         if incluir_info_padrao and indice_info is None:
             indice_info = len(colunas_insert)
             colunas_insert.append("info")
+        # Fim do bloco que prepara a coluna info de produto.
 
         LOGGER.info(
             "Validação do CSV concluída: tabela=%s linhas=%s.",
@@ -1392,11 +1398,13 @@ class ImportadorApp:
                         )
                     valores = valores[:len(colunas)]
                     valores.extend([""] * (len(colunas) - len(valores)))
+                    # Início do bloco que marca cada linha importada para produto.
                     if incluir_info_padrao:
                         if indice_info < len(valores):
                             valores[indice_info] = "Importado via importador AS."
                         else:
                             valores.append("Importado via importador AS.")
+                    # Fim do bloco que marca cada linha importada para produto.
                     linhas_importadas += 1
                     yield [valor if valor != "" else None for valor in valores]
 
@@ -1428,6 +1436,7 @@ class ImportadorApp:
             parent=self.root,
         )
 
+    # Fim do bloco de importação e validação de arquivos CSV.
     def abrir_configuracao(self):
         # Abre o formulário modal usado para informar ou testar o acesso ao banco.
         janela = tk.Toplevel(self.root)
