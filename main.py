@@ -1281,7 +1281,7 @@ class ImportadorApp:
         ).pack(side="right")
         ttk.Button(
             botoes,
-            text="Continuar com a importação",
+            text="Importar dados",
             command=lambda: fechar(True),
         ).pack(side="right", padx=(0, 8))
         janela.protocol("WM_DELETE_WINDOW", lambda: fechar())
