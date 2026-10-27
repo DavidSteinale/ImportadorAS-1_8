@@ -165,6 +165,9 @@ class ImportadorApp:
         importar_menu.add_command(
             label="Importar dados por CSV...", command=self.importar_dados_csv
         )
+        importar_menu.add_command(
+            label="Grupos", command=self.importar_grupos_csv
+        )
         menu.add_cascade(label="Importar", menu=importar_menu)
 
         ajuda_menu = tk.Menu(menu, tearoff=False)
@@ -172,7 +175,7 @@ class ImportadorApp:
             label="Sobre",
             command=lambda: messagebox.showinfo(
                 "Sobre",
-                "Importador de dados para PostgreSQL.\nVersão Beta 1.7",
+                "Importador de dados para PostgreSQL.\nVersão Beta 1.8",
                 parent=self.root,
             ),
         )
@@ -984,7 +987,17 @@ class ImportadorApp:
     """
 
     # Início do bloco de importação e validação de arquivos CSV.
-    def _analisar_colunas_unicas_csv(self, caminho, colunas):
+    def _analisar_colunas_unicas_csv(self, caminho, colunas, validar_codigos=True):
+        if not validar_codigos:
+            with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+                leitor = csv.reader(arquivo, delimiter=";")
+                next(leitor, None)
+                linhas_analisadas = sum(
+                    any(valor.strip() for valor in valores)
+                    for valores in leitor
+                )
+            return linhas_analisadas, []
+
         # Valida a presença e a unicidade dos valores em codigo e codigo_Barra.
         colunas_obrigatorias = ("codigo", "codigo_Barra")
         indices_colunas = {nome.casefold(): [] for nome in colunas_obrigatorias}
@@ -1294,20 +1307,39 @@ class ImportadorApp:
         return None
 
     # Fim do bloco de revisão e normalização de acentos no CSV.
-    def importar_dados_csv(self):
+    def importar_dados_csv(
+        self,
+        validar_codigos=True,
+        revisar_caracteres=True,
+        tabela_padrao="produto",
+        tabela_fixa=None,
+        usar_configuracao_ambiente=False,
+    ):
         # Solicita destino e arquivo antes de preparar os registros.
-        if not self._exigir_configuracao():
+        if usar_configuracao_ambiente:
+            if self.configuracao is None:
+                self.configuracao = {
+                    "host": os.getenv("PGHOST", "localhost"),
+                    "port": int(os.getenv("PGPORT", "5432")),
+                    "dbname": os.getenv("PGDATABASE", "autosystem"),
+                    "user": os.getenv("PGUSER", "postgres"),
+                    "password": os.getenv("PGPASSWORD", ""),
+                }
+        elif not self._exigir_configuracao():
             return
 
-        nome_tabela = simpledialog.askstring(
-            "Tabela de destino",
-            "Informe a tabela onde os dados serão inseridos (ou esquema.tabela):",
-            initialvalue="produto",
-            parent=self.root,
-        )
-        if nome_tabela is None:
-            LOGGER.info("Importação CSV cancelada antes da escolha da tabela.")
-            return
+        if tabela_fixa is None:
+            nome_tabela = simpledialog.askstring(
+                "Tabela de destino",
+                "Informe a tabela onde os dados serão inseridos (ou esquema.tabela):",
+                initialvalue=tabela_padrao,
+                parent=self.root,
+            )
+            if nome_tabela is None:
+                LOGGER.info("Importação CSV cancelada antes da escolha da tabela.")
+                return
+        else:
+            nome_tabela = tabela_fixa
 
         partes_tabela = [parte.strip() for parte in nome_tabela.split(".")]
         if not partes_tabela[0] or len(partes_tabela) > 2 or any(not parte for parte in partes_tabela):
@@ -1367,7 +1399,9 @@ class ImportadorApp:
             return
 
         try:
-            linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(caminho, colunas)
+            linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(
+                caminho, colunas, validar_codigos
+            )
         except (OSError, UnicodeError, csv.Error, ValueError) as erro:
             LOGGER.error("Falha na análise prévia do CSV (%s).", type(erro).__name__)
             messagebox.showerror("Erro na análise do CSV", str(erro), parent=self.root)
@@ -1414,15 +1448,51 @@ class ImportadorApp:
             )
             return
 
-        caminho_revisado = self._revisar_acentos_csv(caminho)
-        if caminho_revisado is None:
-            LOGGER.info("Importação CSV cancelada na revisão de caracteres.")
-            return
-        caminho = caminho_revisado
+        if revisar_caracteres:
+            caminho_revisado = self._revisar_acentos_csv(caminho)
+            if caminho_revisado is None:
+                LOGGER.info("Importação CSV cancelada na revisão de caracteres.")
+                return
+            caminho = caminho_revisado
 
         # Início do bloco que prepara a coluna info de produto.
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
         colunas_insert = list(colunas)
+
+        # Início do bloco que mapeia nome_grupo para produto.grupo.
+        indice_nome_grupo = next(
+            (
+                indice
+                for indice, coluna in enumerate(colunas)
+                if coluna.casefold() == "nome_grupo"
+            ),
+            None,
+        )
+        indice_grupo_origem = next(
+            (
+                indice
+                for indice, coluna in enumerate(colunas)
+                if coluna.casefold() == "grupo"
+            ),
+            None,
+        )
+        resolver_nome_grupo = incluir_info_padrao and indice_nome_grupo is not None
+        indice_grupo_insert = None
+        if resolver_nome_grupo:
+            colunas_insert = [
+                coluna
+                for indice, coluna in enumerate(colunas)
+                if indice != indice_nome_grupo
+            ]
+            if indice_grupo_origem is None:
+                indice_grupo_insert = len(colunas_insert)
+                colunas_insert.append("grupo")
+            else:
+                indice_grupo_insert = indice_grupo_origem - (
+                    indice_nome_grupo < indice_grupo_origem
+                )
+        # Fim do bloco que mapeia nome_grupo para produto.grupo.
+
         indice_info = colunas_insert.index("info") if "info" in colunas_insert else None
         if incluir_info_padrao and indice_info is None:
             indice_info = len(colunas_insert)
@@ -1468,20 +1538,51 @@ class ImportadorApp:
                         )
                     valores = valores[:len(colunas)]
                     valores.extend([""] * (len(colunas) - len(valores)))
+                    # Início do bloco que troca nome_grupo pelo grid da tabela grupo_produto.
+                    valores_para_inserir = list(valores)
+                    if resolver_nome_grupo:
+                        nome_grupo = valores_para_inserir[indice_nome_grupo].strip()
+                        chave_grupo = self._normalizar_texto_csv(nome_grupo).strip().casefold()
+                        if not chave_grupo:
+                            raise ValueError(
+                                f"Linha {numero_linha}: o campo nome_grupo está vazio."
+                            )
+                        if chave_grupo in grupos_ambiguos:
+                            raise ValueError(
+                                f"Linha {numero_linha}: o grupo '{nome_grupo}' possui mais de um grid."
+                            )
+                        if chave_grupo not in grids_por_nome:
+                            raise ValueError(
+                                f"Linha {numero_linha}: grupo '{nome_grupo}' não encontrado em grupo_produto."
+                            )
+
+                        valores_para_inserir.pop(indice_nome_grupo)
+                        if indice_grupo_origem is None:
+                            valores_para_inserir.insert(
+                                indice_grupo_insert,
+                                grids_por_nome[chave_grupo],
+                            )
+                        else:
+                            valores_para_inserir[indice_grupo_insert] = grids_por_nome[
+                                chave_grupo
+                            ]
+                    # Fim do bloco que troca nome_grupo pelo grid da tabela grupo_produto.
+
                     # Início do bloco que marca cada linha importada para produto.
                     if incluir_info_padrao:
-                        if indice_info < len(valores):
-                            valores[indice_info] = "Importado via importador AS."
+                        if indice_info < len(valores_para_inserir):
+                            valores_para_inserir[indice_info] = "Importado via importador AS."
                         else:
-                            valores.append("Importado via importador AS.")
+                            valores_para_inserir.append("Importado via importador AS.")
                     # Fim do bloco que marca cada linha importada para produto.
                     linhas_importadas += 1
                     # Início do bloco de conversão para maiúsculas antes do INSERT.
-                    valores_para_inserir = [
-                        self._corrigir_mojibake(valor).upper() if valor else None
-                        for valor in valores
-                    ]
-                    yield valores_para_inserir
+                    valores_convertidos = []
+                    for valor in valores_para_inserir:
+                        if isinstance(valor, str):
+                            valor = self._corrigir_mojibake(valor).upper() if valor else None
+                        valores_convertidos.append(valor)
+                    yield valores_convertidos
                     # Fim do bloco de conversão para maiúsculas antes do INSERT.
             # Fim do bloco de leitura do CSV em UTF-8 para o INSERT.
 
@@ -1493,6 +1594,27 @@ class ImportadorApp:
                 client_encoding="UTF8",
             ) as conexao:
                 with conexao.cursor() as cursor:
+                    # Início do bloco que carrega os grids de grupo_produto.
+                    grids_por_nome = {}
+                    grupos_ambiguos = set()
+                    if resolver_nome_grupo:
+                        esquema_grupo = partes_tabela[-2] if len(partes_tabela) == 2 else "public"
+                        consulta_grupos = sql.SQL("SELECT {}, {} FROM {}").format(
+                            sql.Identifier("nome"),
+                            sql.Identifier("grid"),
+                            sql.Identifier(esquema_grupo, "grupo_produto"),
+                        )
+                        cursor.execute(consulta_grupos)
+                        for nome, grid in cursor.fetchall():
+                            if nome is None:
+                                continue
+                            chave_grupo = self._normalizar_texto_csv(str(nome)).strip().casefold()
+                            if chave_grupo in grids_por_nome and grids_por_nome[chave_grupo] != grid:
+                                grupos_ambiguos.add(chave_grupo)
+                            else:
+                                grids_por_nome[chave_grupo] = grid
+                    # Fim do bloco que carrega os grids de grupo_produto.
+
                     cursor.executemany(consulta_insert, ler_linhas())
             # Fim do bloco que envia os valores em UTF-8 ao INSERT.
         except (psycopg.Error, OSError, UnicodeError, csv.Error, ValueError) as erro:
@@ -1519,6 +1641,16 @@ class ImportadorApp:
             parent=self.root,
         )
 
+    # Início do bloco exclusivo de importação de grupos sem validações de produto.
+    def importar_grupos_csv(self):
+        self.importar_dados_csv(
+            validar_codigos=False,
+            revisar_caracteres=False,
+            tabela_fixa="grupo_produto",
+            usar_configuracao_ambiente=True,
+        )
+
+    # Fim do bloco exclusivo de importação de grupos sem validações de produto.
     # Fim do bloco de importação e validação de arquivos CSV.
     def abrir_configuracao(self):
         # Abre o formulário modal usado para informar ou testar o acesso ao banco.
