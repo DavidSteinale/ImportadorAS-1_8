@@ -29,6 +29,7 @@ PASTA_APLICATIVO = (
 )
 ARQUIVO_LOG = PASTA_APLICATIVO / "importador.txt"
 ARQUIVO_RELATORIO_VALIDACAO = PASTA_APLICATIVO / "relatorio_validacao_importacao.txt"
+ARQUIVO_RELATORIO_CPFS_DUPLICADOS = PASTA_APLICATIVO / "relatorio_cpfs_duplicados.xlsx"
 
 LOGGER = logging.getLogger("importador")
 LOGGER.setLevel(logging.INFO)
@@ -167,6 +168,9 @@ class ImportadorApp:
         )
         importar_menu.add_command(
             label="Grupos", command=self.importar_grupos_csv
+        )
+        importar_menu.add_command(
+            label="Clientes", command=self.importar_clientes_csv
         )
         menu.add_cascade(label="Importar", menu=importar_menu)
 
@@ -1307,6 +1311,77 @@ class ImportadorApp:
         return None
 
     # Fim do bloco de revisão e normalização de acentos no CSV.
+    # Início do bloco que localiza CPFs duplicados no CSV de clientes.
+    @staticmethod
+    def _analisar_cpfs_duplicados_csv(caminho, colunas):
+        indice_cpf = next(
+            (
+                indice
+                for indice, coluna in enumerate(colunas)
+                if coluna.casefold() == "cpf"
+            ),
+            None,
+        )
+        if indice_cpf is None:
+            raise ValueError('O arquivo CSV de clientes precisa conter a coluna "cpf".')
+
+        ocorrencias = {}
+        duplicados = {}
+        with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
+            leitor = csv.reader(arquivo, delimiter=";")
+            next(leitor, None)
+            for numero_linha, valores in enumerate(leitor, start=2):
+                if not any(valor.strip() for valor in valores):
+                    continue
+                if len(valores) > len(colunas) and any(
+                    valor.strip() for valor in valores[len(colunas):]
+                ):
+                    raise ValueError(
+                        f"A linha {numero_linha} contém valores além das colunas do cabeçalho."
+                    )
+                valores = valores[:len(colunas)]
+                valores.extend([""] * (len(colunas) - len(valores)))
+                cpf = valores[indice_cpf].strip()
+                chave_cpf = re.sub(r"[.\-\s]", "", cpf).casefold()
+                if not chave_cpf:
+                    continue
+
+                registro = {
+                    "linha": numero_linha,
+                    "cpf": cpf,
+                    "valores": valores,
+                }
+                if chave_cpf in duplicados:
+                    duplicados[chave_cpf].append(registro)
+                elif chave_cpf in ocorrencias:
+                    duplicados[chave_cpf] = [ocorrencias.pop(chave_cpf), registro]
+                else:
+                    ocorrencias[chave_cpf] = registro
+
+        return list(duplicados.values())
+    # Fim do bloco que localiza CPFs duplicados no CSV de clientes.
+
+    # Início do bloco que gera o relatório Excel de CPFs duplicados.
+    @staticmethod
+    def _salvar_relatorio_cpfs_duplicados(duplicados, colunas, caminho):
+        relatorio = Workbook()
+        planilha = relatorio.active
+        planilha.title = "CPFs duplicados"
+        planilha.append(["Linha CSV", *colunas, "Ação"])
+        linhas_ignoradas = set()
+
+        for grupo in duplicados:
+            for indice, item in enumerate(grupo):
+                acao = "Mantido" if indice == 0 else "Ignorado como duplicado"
+                planilha.append([item["linha"], *item["valores"], acao])
+                if indice > 0:
+                    linhas_ignoradas.add(item["linha"])
+
+        relatorio.save(caminho)
+        relatorio.close()
+        return linhas_ignoradas
+    # Fim do bloco que gera o relatório Excel de CPFs duplicados.
+
     def importar_dados_csv(
         self,
         validar_codigos=True,
@@ -1314,6 +1389,8 @@ class ImportadorApp:
         tabela_padrao="produto",
         tabela_fixa=None,
         solicitar_configuracao=False,
+        gerar_codigo_automatico=False,
+        validar_cpfs_duplicados=False,
     ):
         # Solicita destino e arquivo antes de preparar os registros.
         if solicitar_configuracao:
@@ -1392,6 +1469,53 @@ class ImportadorApp:
             )
             return
 
+        # Início do bloco de validação de CPF duplicado e geração do relatório Excel (clientes).
+        linhas_csv_ignoradas = set()
+        if validar_cpfs_duplicados:
+            try:
+                grupos_cpfs_duplicados = self._analisar_cpfs_duplicados_csv(
+                    caminho, colunas
+                )
+            except (OSError, UnicodeError, csv.Error, ValueError) as erro:
+                LOGGER.error(
+                    "Falha na validação de CPFs do CSV (%s).",
+                    type(erro).__name__,
+                )
+                messagebox.showerror(
+                    "Erro na validação de CPFs",
+                    str(erro),
+                    parent=self.root,
+                )
+                return
+
+            if grupos_cpfs_duplicados:
+                try:
+                    linhas_csv_ignoradas = self._salvar_relatorio_cpfs_duplicados(
+                        grupos_cpfs_duplicados,
+                        colunas,
+                        ARQUIVO_RELATORIO_CPFS_DUPLICADOS,
+                    )
+                except OSError as erro:
+                    LOGGER.error(
+                        "Falha ao salvar relatório Excel de CPFs duplicados (%s).",
+                        type(erro).__name__,
+                    )
+                    messagebox.showerror(
+                        "Erro ao salvar relatório",
+                        f"Não foi possível salvar o relatório:\n{erro}",
+                        parent=self.root,
+                    )
+                    return
+
+                LOGGER.warning(
+                    "CPFs duplicados encontrados: grupos=%s registros_ignorados=%s "
+                    "relatorio=%s.",
+                    len(grupos_cpfs_duplicados),
+                    len(linhas_csv_ignoradas),
+                    ARQUIVO_RELATORIO_CPFS_DUPLICADOS.name,
+                )
+        # Fim do bloco de validação de CPF duplicado e geração do relatório Excel (clientes).
+
         try:
             linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(
                 caminho, colunas, validar_codigos
@@ -1452,6 +1576,13 @@ class ImportadorApp:
         # Início do bloco que prepara a coluna info de produto.
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
         colunas_insert = list(colunas)
+        # Início do bloco que define se o código de pessoa será gerado (CSV sem coluna codigo).
+        gerar_codigo_pessoa = gerar_codigo_automatico and not any(
+            coluna.casefold() == "codigo" for coluna in colunas
+        )
+        if gerar_codigo_pessoa:
+            colunas_insert.append("codigo")
+        # Fim do bloco que define se o código de pessoa será gerado.
 
         # Início do bloco que mapeia codigo_grupo para produto.grupo.
         indice_codigo_grupo = next(
@@ -1514,14 +1645,18 @@ class ImportadorApp:
             sql.SQL(", ").join(sql.Placeholder() for _ in colunas_insert),
         )
         linhas_importadas = 0
+        proximo_codigo = None
 
         def ler_linhas():
-            nonlocal linhas_importadas
+            nonlocal linhas_importadas, proximo_codigo
             # Início do bloco de leitura do CSV em UTF-8 para o INSERT.
             with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
                 leitor = csv.reader(arquivo, delimiter=";")
                 next(leitor, None)
                 for numero_linha, valores in enumerate(leitor, start=2):
+                    # Início/fim do bloco que pula linhas de CPF duplicado (clientes).
+                    if numero_linha in linhas_csv_ignoradas:
+                        continue
                     if not any(valor.strip() for valor in valores):
                         continue
                     if len(valores) > len(colunas) and any(
@@ -1577,6 +1712,11 @@ class ImportadorApp:
                         else:
                             valores_para_inserir.append("Importado via importador AS.")
                     # Fim do bloco que marca cada linha importada para produto.
+                    # Início do bloco que adiciona o código sequencial gerado para pessoa.
+                    if gerar_codigo_pessoa:
+                        valores_para_inserir.append(proximo_codigo)
+                        proximo_codigo += 1
+                    # Fim do bloco que adiciona o código sequencial gerado para pessoa.
                     linhas_importadas += 1
                     # Início do bloco de conversão para maiúsculas antes do INSERT.
                     valores_convertidos = []
@@ -1617,7 +1757,21 @@ class ImportadorApp:
                                 grids_por_codigo[codigo] = grid
                     # Fim do bloco que carrega os grids de grupo_produto por codigo.
 
+                    # Início do bloco que consulta o último código de pessoa para gerar os próximos.
+                    if gerar_codigo_pessoa:
+                        consulta_ultimo_codigo = sql.SQL(
+                            "SELECT COALESCE(MAX({}), 0) FROM {}"
+                        ).format(
+                            sql.Identifier("codigo"),
+                            sql.Identifier(*partes_tabela),
+                        )
+                        cursor.execute(consulta_ultimo_codigo)
+                        proximo_codigo = int(cursor.fetchone()[0]) + 1
+                    # Fim do bloco que consulta o último código de pessoa para gerar os próximos.
+
+                    # Início do INSERT dos registros do CSV (clientes: tabela pessoa).
                     cursor.executemany(consulta_insert, ler_linhas())
+                    # Fim do INSERT dos registros do CSV (clientes: tabela pessoa).
             # Fim do bloco que envia os valores em UTF-8 ao INSERT.
         except (psycopg.Error, OSError, UnicodeError, csv.Error, ValueError) as erro:
             self.status.set("Falha ao importar o CSV.")
@@ -1630,18 +1784,37 @@ class ImportadorApp:
             return
 
         LOGGER.info(
-            "Importação CSV concluída: tabela=%s registros=%s.",
+            "Importação CSV concluída: tabela=%s registros=%s duplicados=%s.",
             nome_tabela,
             linhas_importadas,
+            len(linhas_csv_ignoradas),
         )
-        self.status.set(
-            f"Importação concluída: {linhas_importadas} registro(s) inserido(s) em {nome_tabela}."
-        )
+        # Início do bloco da tela de resumo com registros inseridos e duplicados (clientes).
+        if validar_cpfs_duplicados:
+            resumo_importacao = (
+                f"Registros inseridos: {linhas_importadas}\n"
+                f"Registros duplicados ignorados: {len(linhas_csv_ignoradas)}"
+            )
+        else:
+            resumo_importacao = (
+                f"{linhas_importadas} registro(s) inserido(s) na tabela '{nome_tabela}'."
+            )
+        if validar_cpfs_duplicados:
+            self.status.set(
+                f"Importação concluída: {linhas_importadas} registro(s) inserido(s) "
+                f"em {nome_tabela}; {len(linhas_csv_ignoradas)} duplicado(s) ignorado(s)."
+            )
+        else:
+            self.status.set(
+                f"Importação concluída: {linhas_importadas} registro(s) "
+                f"inserido(s) em {nome_tabela}."
+            )
         messagebox.showinfo(
             "Importação concluída",
-            f"{linhas_importadas} registro(s) inserido(s) na tabela '{nome_tabela}'.",
+            resumo_importacao,
             parent=self.root,
         )
+        # Fim do bloco da tela de resumo com registros inseridos e duplicados (clientes).
 
     # Início do bloco exclusivo de importação de grupos sem validações de produto.
     def importar_grupos_csv(self):
@@ -1653,6 +1826,18 @@ class ImportadorApp:
         )
 
     # Fim do bloco exclusivo de importação de grupos sem validações de produto.
+
+    # Início do bloco exclusivo de importação de clientes para a tabela pessoa.
+    def importar_clientes_csv(self):
+        self.importar_dados_csv(
+            validar_codigos=False,
+            revisar_caracteres=False,
+            tabela_fixa="pessoa",
+            solicitar_configuracao=True,
+            gerar_codigo_automatico=True,
+            validar_cpfs_duplicados=True,
+        )
+    # Fim do bloco exclusivo de importação de clientes para a tabela pessoa.
 
     # Início do bloco exclusivo de importação de produtos para a tabela produto.
     def importar_produtos_csv(self):

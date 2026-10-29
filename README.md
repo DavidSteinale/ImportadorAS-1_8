@@ -13,7 +13,9 @@ Ao abrir o aplicativo, a tela de login (centralizada na área de trabalho) solic
 - **Menu > Executar comandos...**: executa consultas `SELECT` somente leitura no PostgreSQL.
 - **Obter dados > PostgreSQL**: consulta uma tabela PostgreSQL e permite exportar o resultado para XLSX.
 - **Obter dados > SQL Server**: consulta uma tabela SQL Server via ODBC e permite exportar o resultado para XLSX.
-- **Importar > Importar dados por CSV...**: importa um arquivo CSV separado por ponto e vírgula para uma tabela PostgreSQL.
+- **Importar > Produtos**: importa um arquivo CSV para a tabela `produto`.
+- **Importar > Grupos**: importa um arquivo CSV para a tabela `grupo_produto`.
+- **Importar > Clientes**: importa um arquivo CSV para a tabela `pessoa`.
 - **Ajuda > Sobre**: mostra a descrição e versão do aplicativo.
 
 ## Preparar o ambiente
@@ -36,9 +38,9 @@ Instale o Microsoft ODBC Driver 17 ou 18 para SQL Server, com arquitetura compat
 
 ## Importar arquivo CSV
 
-Use **Importar > Importar dados por CSV...**. Informe a tabela de destino (opcionalmente `esquema.tabela`) e selecione o arquivo. O delimitador deve ser ponto e vírgula (`;`) e a primeira linha deve conter os nomes das colunas da tabela PostgreSQL.
+Use uma opção do menu **Importar** e selecione o arquivo CSV. Produtos são importados para `produto`, grupos para `grupo_produto` e clientes para `pessoa`. Ao concluir a importação de clientes, a tela informa quantos registros foram inseridos e quantos duplicados foram ignorados. Na importação de clientes, a primeira ocorrência de cada CPF é mantida e as seguintes são ignoradas somente na importação, sem alterar o CSV original. As ocorrências de CPFs repetidos são registradas em `relatorio_cpfs_duplicados.xlsx`, com as linhas mantidas e ignoradas identificadas. Se o CSV não tiver a coluna `codigo`, o próximo código é gerado a partir do maior valor já cadastrado em `pessoa`; se a coluna existir, seus valores são mantidos. O delimitador deve ser ponto e vírgula (`;`) e a primeira linha deve conter os nomes das colunas da tabela PostgreSQL.
 
-Antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. Ambas podem ficar vazias. Quando preenchidos, os valores de cada coluna não podem se repetir. Se houver duplicidades, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores do arquivo; revise-o antes de compartilhar.
+Na importação de produtos, antes do `INSERT`, o aplicativo verifica as colunas `codigo` e `codigo_Barra`. Ambas podem ficar vazias. Quando preenchidos, os valores de cada coluna não podem se repetir. Se houver duplicidades, a importação é cancelada e as ocorrências são registradas em `relatorio_validacao_importacao.txt`, ao lado do executável ou de `main.py`. O relatório pode conter valores do arquivo; revise-o antes de compartilhar.
 
 Todos os `INSERT`s do CSV são feitos na mesma transação: em caso de erro, a transação é revertida. Arquivos com BOM UTF-8 são aceitos; células vazias são importadas como `NULL`.
 
@@ -51,6 +53,7 @@ As telas **Obter dados > PostgreSQL** e **Obter dados > SQL Server** recebem os 
 ## Logs
 
 O aplicativo escreve eventos e erros em `importador.txt`, ao lado de `Importador.exe` quando empacotado ou ao lado de `main.py` no modo de desenvolvimento. O log não contém senhas nem o texto literal dos comandos SQL.
+
 
 ## Gerar o executável
 
