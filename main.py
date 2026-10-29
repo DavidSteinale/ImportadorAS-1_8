@@ -163,7 +163,7 @@ class ImportadorApp:
 
         importar_menu = tk.Menu(menu, tearoff=False)
         importar_menu.add_command(
-            label="Importar dados por CSV...", command=self.importar_dados_csv
+            label="Produtos", command=self.importar_produtos_csv
         )
         importar_menu.add_command(
             label="Grupos", command=self.importar_grupos_csv
@@ -1313,18 +1313,12 @@ class ImportadorApp:
         revisar_caracteres=True,
         tabela_padrao="produto",
         tabela_fixa=None,
-        usar_configuracao_ambiente=False,
+        solicitar_configuracao=False,
     ):
         # Solicita destino e arquivo antes de preparar os registros.
-        if usar_configuracao_ambiente:
-            if self.configuracao is None:
-                self.configuracao = {
-                    "host": os.getenv("PGHOST", "localhost"),
-                    "port": int(os.getenv("PGPORT", "5432")),
-                    "dbname": os.getenv("PGDATABASE", "autosystem"),
-                    "user": os.getenv("PGUSER", "postgres"),
-                    "password": os.getenv("PGPASSWORD", ""),
-                }
+        if solicitar_configuracao:
+            if not self._solicitar_configuracao_importacao():
+                return
         elif not self._exigir_configuracao():
             return
 
@@ -1459,12 +1453,12 @@ class ImportadorApp:
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
         colunas_insert = list(colunas)
 
-        # Início do bloco que mapeia nome_grupo para produto.grupo.
-        indice_nome_grupo = next(
+        # Início do bloco que mapeia codigo_grupo para produto.grupo.
+        indice_codigo_grupo = next(
             (
                 indice
                 for indice, coluna in enumerate(colunas)
-                if coluna.casefold() == "nome_grupo"
+                if coluna.casefold() == "codigo_grupo"
             ),
             None,
         )
@@ -1476,22 +1470,22 @@ class ImportadorApp:
             ),
             None,
         )
-        resolver_nome_grupo = incluir_info_padrao and indice_nome_grupo is not None
+        resolver_codigo_grupo = incluir_info_padrao and indice_codigo_grupo is not None
         indice_grupo_insert = None
-        if resolver_nome_grupo:
+        if resolver_codigo_grupo:
             colunas_insert = [
                 coluna
                 for indice, coluna in enumerate(colunas)
-                if indice != indice_nome_grupo
+                if indice != indice_codigo_grupo
             ]
             if indice_grupo_origem is None:
                 indice_grupo_insert = len(colunas_insert)
                 colunas_insert.append("grupo")
             else:
                 indice_grupo_insert = indice_grupo_origem - (
-                    indice_nome_grupo < indice_grupo_origem
+                    indice_codigo_grupo < indice_grupo_origem
                 )
-        # Fim do bloco que mapeia nome_grupo para produto.grupo.
+        # Fim do bloco que mapeia codigo_grupo para produto.grupo.
 
         indice_info = colunas_insert.index("info") if "info" in colunas_insert else None
         if incluir_info_padrao and indice_info is None:
@@ -1538,35 +1532,43 @@ class ImportadorApp:
                         )
                     valores = valores[:len(colunas)]
                     valores.extend([""] * (len(colunas) - len(valores)))
-                    # Início do bloco que troca nome_grupo pelo grid da tabela grupo_produto.
+                    # Início do bloco que troca codigo_grupo pelo grid da tabela grupo_produto.
                     valores_para_inserir = list(valores)
-                    if resolver_nome_grupo:
-                        nome_grupo = valores_para_inserir[indice_nome_grupo].strip()
-                        chave_grupo = self._normalizar_texto_csv(nome_grupo).strip().casefold()
-                        if not chave_grupo:
+                    if resolver_codigo_grupo:
+                        codigo_grupo_texto = valores_para_inserir[indice_codigo_grupo].strip()
+                        if not codigo_grupo_texto:
                             raise ValueError(
-                                f"Linha {numero_linha}: o campo nome_grupo está vazio."
+                                f"Linha {numero_linha}: o campo codigo_grupo está vazio."
                             )
-                        if chave_grupo in grupos_ambiguos:
+                        try:
+                            codigo_grupo = int(codigo_grupo_texto)
+                        except ValueError as erro:
                             raise ValueError(
-                                f"Linha {numero_linha}: o grupo '{nome_grupo}' possui mais de um grid."
+                                f"Linha {numero_linha}: codigo_grupo '{codigo_grupo_texto}' "
+                                "deve ser um número inteiro."
+                            ) from erro
+                        if codigo_grupo in codigos_ambiguos:
+                            raise ValueError(
+                                f"Linha {numero_linha}: codigo_grupo {codigo_grupo} "
+                                "está associado a mais de um grid em grupo_produto."
                             )
-                        if chave_grupo not in grids_por_nome:
+                        if codigo_grupo not in grids_por_codigo:
                             raise ValueError(
-                                f"Linha {numero_linha}: grupo '{nome_grupo}' não encontrado em grupo_produto."
+                                f"Linha {numero_linha}: codigo_grupo {codigo_grupo} "
+                                "não encontrado em grupo_produto."
                             )
 
-                        valores_para_inserir.pop(indice_nome_grupo)
+                        valores_para_inserir.pop(indice_codigo_grupo)
                         if indice_grupo_origem is None:
                             valores_para_inserir.insert(
                                 indice_grupo_insert,
-                                grids_por_nome[chave_grupo],
+                                grids_por_codigo[codigo_grupo],
                             )
                         else:
-                            valores_para_inserir[indice_grupo_insert] = grids_por_nome[
-                                chave_grupo
+                            valores_para_inserir[indice_grupo_insert] = grids_por_codigo[
+                                codigo_grupo
                             ]
-                    # Fim do bloco que troca nome_grupo pelo grid da tabela grupo_produto.
+                    # Fim do bloco que troca codigo_grupo pelo grid da tabela grupo_produto.
 
                     # Início do bloco que marca cada linha importada para produto.
                     if incluir_info_padrao:
@@ -1594,26 +1596,26 @@ class ImportadorApp:
                 client_encoding="UTF8",
             ) as conexao:
                 with conexao.cursor() as cursor:
-                    # Início do bloco que carrega os grids de grupo_produto.
-                    grids_por_nome = {}
-                    grupos_ambiguos = set()
-                    if resolver_nome_grupo:
+                    # Início do bloco que carrega os grids de grupo_produto por codigo.
+                    grids_por_codigo = {}
+                    codigos_ambiguos = set()
+                    if resolver_codigo_grupo:
                         esquema_grupo = partes_tabela[-2] if len(partes_tabela) == 2 else "public"
                         consulta_grupos = sql.SQL("SELECT {}, {} FROM {}").format(
-                            sql.Identifier("nome"),
+                            sql.Identifier("codigo"),
                             sql.Identifier("grid"),
                             sql.Identifier(esquema_grupo, "grupo_produto"),
                         )
                         cursor.execute(consulta_grupos)
-                        for nome, grid in cursor.fetchall():
-                            if nome is None:
+                        for codigo, grid in cursor.fetchall():
+                            if codigo is None:
                                 continue
-                            chave_grupo = self._normalizar_texto_csv(str(nome)).strip().casefold()
-                            if chave_grupo in grids_por_nome and grids_por_nome[chave_grupo] != grid:
-                                grupos_ambiguos.add(chave_grupo)
+                            codigo = int(codigo)
+                            if codigo in grids_por_codigo and grids_por_codigo[codigo] != grid:
+                                codigos_ambiguos.add(codigo)
                             else:
-                                grids_por_nome[chave_grupo] = grid
-                    # Fim do bloco que carrega os grids de grupo_produto.
+                                grids_por_codigo[codigo] = grid
+                    # Fim do bloco que carrega os grids de grupo_produto por codigo.
 
                     cursor.executemany(consulta_insert, ler_linhas())
             # Fim do bloco que envia os valores em UTF-8 ao INSERT.
@@ -1647,11 +1649,39 @@ class ImportadorApp:
             validar_codigos=False,
             revisar_caracteres=False,
             tabela_fixa="grupo_produto",
-            usar_configuracao_ambiente=True,
+            solicitar_configuracao=True,
         )
 
     # Fim do bloco exclusivo de importação de grupos sem validações de produto.
+
+    # Início do bloco exclusivo de importação de produtos para a tabela produto.
+    def importar_produtos_csv(self):
+        self.importar_dados_csv(
+            tabela_fixa="produto",
+            solicitar_configuracao=True,
+        )
+
+    # Fim do bloco exclusivo de importação de produtos para a tabela produto.
     # Fim do bloco de importação e validação de arquivos CSV.
+    # Início do bloco que exige nova configuração e teste de conexão antes da importação.
+    def _solicitar_configuracao_importacao(self):
+        if self.configuracao is not None:
+            return True
+
+        self.abrir_configuracao()
+
+        if self.configuracao is None:
+            LOGGER.info("Importação cancelada antes de configurar a conexão PostgreSQL.")
+            return False
+
+        if not self._testar_configuracao(self.configuracao, self.root):
+            self.configuracao = None
+            LOGGER.warning("Importação cancelada após falha no teste de conexão PostgreSQL.")
+            return False
+
+        return True
+
+    # Fim do bloco que exige nova configuração e teste de conexão antes da importação.
     def abrir_configuracao(self):
         # Abre o formulário modal usado para informar ou testar o acesso ao banco.
         janela = tk.Toplevel(self.root)
