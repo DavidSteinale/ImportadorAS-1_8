@@ -46,6 +46,71 @@ if not LOGGER.handlers:
 # Carrega as variáveis locais do arquivo .env sem versionar credenciais.
 load_dotenv()
 
+# Início do bloco de tema visual leve (somente ttk, sem dependências extras).
+COR_FUNDO = "#f5f7fa"
+COR_TEXTO = "#1f2937"
+COR_DESTAQUE = "#2563eb"
+COR_DESTAQUE_ESCURO = "#1d4ed8"
+COR_BORDA = "#d1d5db"
+FONTE_PADRAO = ("Segoe UI", 10)
+
+
+def aplicar_tema(janela):
+    # O ttk.Style vale para toda a janela raiz, inclusive para os Toplevel criados depois.
+    estilo = ttk.Style(janela)
+    if "clam" in estilo.theme_names():
+        estilo.theme_use("clam")
+    janela.configure(background=COR_FUNDO)
+    janela.option_add("*Font", FONTE_PADRAO)
+    janela.option_add("*Toplevel.background", COR_FUNDO)
+    estilo.configure(".", background=COR_FUNDO, foreground=COR_TEXTO, font=FONTE_PADRAO)
+    estilo.configure("TFrame", background=COR_FUNDO)
+    estilo.configure("TLabel", background=COR_FUNDO, foreground=COR_TEXTO)
+    estilo.configure("TCheckbutton", background=COR_FUNDO)
+    estilo.configure(
+        "TEntry", padding=5, fieldbackground="white", bordercolor=COR_BORDA,
+        lightcolor=COR_BORDA, darkcolor=COR_BORDA,
+    )
+    estilo.map("TEntry", bordercolor=[("focus", COR_DESTAQUE)])
+    estilo.configure(
+        "TCombobox", padding=5, fieldbackground="white", bordercolor=COR_BORDA,
+        lightcolor=COR_BORDA, darkcolor=COR_BORDA,
+    )
+    estilo.configure(
+        "TButton", padding=(14, 6), background="white", bordercolor=COR_BORDA,
+        lightcolor="white", darkcolor="white", focusthickness=0,
+    )
+    estilo.map(
+        "TButton",
+        background=[("active", "#e8eefc"), ("disabled", "#eceff3")],
+        foreground=[("disabled", "#9ca3af")],
+    )
+    estilo.configure(
+        "Accent.TButton", background=COR_DESTAQUE, foreground="white",
+        bordercolor=COR_DESTAQUE, lightcolor=COR_DESTAQUE, darkcolor=COR_DESTAQUE,
+    )
+    estilo.map(
+        "Accent.TButton",
+        background=[("active", COR_DESTAQUE_ESCURO), ("disabled", "#93b4f5")],
+        foreground=[("disabled", "white")],
+    )
+    estilo.configure("Titulo.TLabel", font=("Segoe UI", 20, "bold"), foreground=COR_DESTAQUE)
+    estilo.configure("Subtitulo.TLabel", foreground="#6b7280")
+    estilo.configure("Erro.TLabel", foreground="#b00020")
+    estilo.configure(
+        "Treeview", rowheight=26, background="white", fieldbackground="white",
+        bordercolor=COR_BORDA, lightcolor=COR_BORDA, darkcolor=COR_BORDA,
+    )
+    estilo.map("Treeview", background=[("selected", "#dbe7ff")], foreground=[("selected", COR_TEXTO)])
+    estilo.configure(
+        "Treeview.Heading", background="#e5eaf2", foreground=COR_TEXTO,
+        font=("Segoe UI", 10, "bold"), padding=(8, 6), relief="flat",
+    )
+    estilo.map("Treeview.Heading", background=[("active", "#d5dded")])
+    estilo.configure("TSeparator", background=COR_BORDA)
+# Fim do bloco de tema visual leve.
+
+
 # Início do bloco de login e centralização das janelas.
 USUARIO_LOGIN = "master"
 
@@ -66,6 +131,7 @@ def solicitar_login():
     # Exibe a tela de login e retorna o usuário autenticado, ou None se a janela for fechada.
     janela = tk.Tk()
     janela.title("Login - Importador")
+    aplicar_tema(janela)
     janela.resizable(False, False)
     resultado = {"usuario": None}
     senha = tk.StringVar()
@@ -84,16 +150,22 @@ def solicitar_login():
         senha.set("")
         mensagem.set("Senha inválida.")
 
-    formulario = ttk.Frame(janela, padding=20)
+    formulario = ttk.Frame(janela, padding=(32, 28))
     formulario.pack()
-    ttk.Label(formulario, text="Senha").grid(row=0, column=0, sticky="w", pady=4)
-    campo_senha = ttk.Entry(formulario, textvariable=senha, show="*", width=24)
-    campo_senha.grid(row=0, column=1, padx=(10, 0), pady=4)
-    ttk.Label(formulario, textvariable=mensagem, foreground="#b00020").grid(
-        row=1, column=0, columnspan=2, pady=(4, 0)
+    ttk.Label(formulario, text="Importador", style="Titulo.TLabel").grid(
+        row=0, column=0, columnspan=2, pady=(0, 2)
     )
-    ttk.Button(formulario, text="Entrar", command=entrar).grid(
-        row=2, column=0, columnspan=2, pady=(10, 0)
+    ttk.Label(formulario, text="Acesso ao sistema", style="Subtitulo.TLabel").grid(
+        row=1, column=0, columnspan=2, pady=(0, 18)
+    )
+    ttk.Label(formulario, text="Senha").grid(row=2, column=0, sticky="w", pady=4)
+    campo_senha = ttk.Entry(formulario, textvariable=senha, show="*", width=24)
+    campo_senha.grid(row=2, column=1, padx=(10, 0), pady=4)
+    ttk.Label(formulario, textvariable=mensagem, style="Erro.TLabel").grid(
+        row=3, column=0, columnspan=2, pady=(4, 0)
+    )
+    ttk.Button(formulario, text="Entrar", style="Accent.TButton", command=entrar).grid(
+        row=4, column=0, columnspan=2, pady=(12, 0), sticky="ew"
     )
     janela.bind("<Return>", entrar)
     janela.update_idletasks()
@@ -110,6 +182,7 @@ class ImportadorApp:
         # Prepara a janela, o estado da conexão e os elementos da tela inicial.
         self.root = root
         self.root.title("Importador")
+        aplicar_tema(self.root)
         centralizar_janela(self.root, 600, 340)
         self.root.minsize(460, 260)
         self.configuracao = None
@@ -119,12 +192,13 @@ class ImportadorApp:
 
         self._criar_menu()
 
-        conteudo = ttk.Frame(root, padding=24)
+        conteudo = ttk.Frame(root, padding=32)
         conteudo.pack(fill="both", expand=True)
-        ttk.Label(conteudo, text="Importador", font=("Segoe UI", 18, "bold")).pack(anchor="w")
+        ttk.Label(conteudo, text="Importador", style="Titulo.TLabel").pack(anchor="w")
         ttk.Label(
             conteudo,
             text="Use o menu Obter dados para consultar tabelas e salvar em Excel.",
+            style="Subtitulo.TLabel",
         ).pack(anchor="w", pady=(8, 20))
         ttk.Separator(conteudo).pack(fill="x", pady=(0, 14))
         ttk.Label(conteudo, textvariable=self.status, wraplength=520).pack(anchor="w")
