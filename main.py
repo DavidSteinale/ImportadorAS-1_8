@@ -1401,6 +1401,7 @@ class ImportadorApp:
 
         ocorrencias = {}
         duplicados = {}
+        registros = []
         with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
             leitor = csv.reader(arquivo, delimiter=";")
             next(leitor, None)
@@ -1416,15 +1417,17 @@ class ImportadorApp:
                 valores = valores[:len(colunas)]
                 valores.extend([""] * (len(colunas) - len(valores)))
                 cpf = valores[indice_cpf].strip()
-                chave_cpf = re.sub(r"[.\-\s]", "", cpf).casefold()
+                chave_cpf = re.sub(r"\D", "", cpf)
                 if not chave_cpf:
                     continue
 
                 registro = {
                     "linha": numero_linha,
                     "cpf": cpf,
+                    "chave": chave_cpf,
                     "valores": valores,
                 }
+                registros.append(registro)
                 if chave_cpf in duplicados:
                     duplicados[chave_cpf].append(registro)
                 elif chave_cpf in ocorrencias:
@@ -1432,29 +1435,63 @@ class ImportadorApp:
                 else:
                     ocorrencias[chave_cpf] = registro
 
-        return list(duplicados.values())
+        return list(duplicados.values()), registros
     # Fim do bloco que localiza CPFs duplicados no CSV de clientes.
 
-    # Início do bloco que gera o relatório Excel de CPFs duplicados.
+    # Início do bloco que consulta na tabela pessoa os CPFs do CSV já cadastrados.
+    def _buscar_cpfs_ja_cadastrados(self, partes_tabela, chaves_cpf):
+        if not chaves_cpf:
+            return set()
+        expressao_cpf = sql.SQL(
+            "regexp_replace({}::text, '[^0-9]', '', 'g')"
+        ).format(sql.Identifier("cpf"))
+        consulta = sql.SQL("SELECT DISTINCT {expressao} FROM {tabela} WHERE {expressao} = ANY(%s)").format(
+            expressao=expressao_cpf,
+            tabela=sql.Identifier(*partes_tabela),
+        )
+        with psycopg.connect(
+            **self.configuracao, connect_timeout=5, client_encoding="UTF8"
+        ) as conexao:
+            with conexao.cursor() as cursor:
+                cursor.execute(consulta, (sorted(chaves_cpf),))
+                return {linha[0] for linha in cursor.fetchall()}
+    # Fim do bloco que consulta na tabela pessoa os CPFs do CSV já cadastrados.
+
+    # Início do bloco que gera o relatório Excel de CPFs duplicados e já cadastrados.
     @staticmethod
-    def _salvar_relatorio_cpfs_duplicados(duplicados, colunas, caminho):
+    def _salvar_relatorio_cpfs_duplicados(
+        duplicados, colunas, caminho, registros_ja_cadastrados=()
+    ):
         relatorio = Workbook()
         planilha = relatorio.active
         planilha.title = "CPFs duplicados"
         planilha.append(["Linha CSV", *colunas, "Ação"])
-        linhas_ignoradas = set()
+        linhas_duplicadas_ignoradas = set()
+        linhas_ja_cadastradas = {item["linha"] for item in registros_ja_cadastrados}
+        itens = {}
 
         for grupo in duplicados:
             for indice, item in enumerate(grupo):
-                acao = "Mantido" if indice == 0 else "Ignorado como duplicado"
-                planilha.append([item["linha"], *item["valores"], acao])
                 if indice > 0:
-                    linhas_ignoradas.add(item["linha"])
+                    linhas_duplicadas_ignoradas.add(item["linha"])
+                itens[item["linha"]] = (item, indice > 0)
+        for item in registros_ja_cadastrados:
+            itens[item["linha"]] = (item, False)
+
+        for numero_linha in sorted(itens):
+            item, duplicado_ignorado = itens[numero_linha]
+            if numero_linha in linhas_ja_cadastradas:
+                acao = f"Ignorado: CPF {item['cpf']} já cadastrado na tabela pessoa"
+            elif duplicado_ignorado:
+                acao = "Ignorado como duplicado"
+            else:
+                acao = "Mantido"
+            planilha.append([numero_linha, *item["valores"], acao])
 
         relatorio.save(caminho)
         relatorio.close()
-        return linhas_ignoradas
-    # Fim do bloco que gera o relatório Excel de CPFs duplicados.
+        return linhas_duplicadas_ignoradas - linhas_ja_cadastradas, linhas_ja_cadastradas
+    # Fim do bloco que gera o relatório Excel de CPFs duplicados e já cadastrados.
 
     def importar_dados_csv(
         self,
@@ -1543,11 +1580,12 @@ class ImportadorApp:
             )
             return
 
-        # Início do bloco de validação de CPF duplicado e geração do relatório Excel (clientes).
+        # Início do bloco de validação de CPF duplicado e já cadastrado, com relatório Excel (clientes).
         linhas_csv_ignoradas = set()
+        linhas_ja_cadastradas = set()
         if validar_cpfs_duplicados:
             try:
-                grupos_cpfs_duplicados = self._analisar_cpfs_duplicados_csv(
+                grupos_cpfs_duplicados, registros_cpf = self._analisar_cpfs_duplicados_csv(
                     caminho, colunas
                 )
             except (OSError, UnicodeError, csv.Error, ValueError) as erro:
@@ -1562,12 +1600,37 @@ class ImportadorApp:
                 )
                 return
 
-            if grupos_cpfs_duplicados:
+            try:
+                chaves_ja_cadastradas = self._buscar_cpfs_ja_cadastrados(
+                    partes_tabela, {registro["chave"] for registro in registros_cpf}
+                )
+            except psycopg.Error as erro:
+                LOGGER.error(
+                    "Falha ao consultar CPFs já cadastrados (%s).",
+                    type(erro).__name__,
+                )
+                messagebox.showerror(
+                    "Erro ao consultar CPFs cadastrados",
+                    str(erro),
+                    parent=self.root,
+                )
+                return
+            registros_ja_cadastrados = [
+                registro
+                for registro in registros_cpf
+                if registro["chave"] in chaves_ja_cadastradas
+            ]
+
+            if grupos_cpfs_duplicados or registros_ja_cadastrados:
                 try:
-                    linhas_csv_ignoradas = self._salvar_relatorio_cpfs_duplicados(
+                    (
+                        linhas_duplicadas_ignoradas,
+                        linhas_ja_cadastradas,
+                    ) = self._salvar_relatorio_cpfs_duplicados(
                         grupos_cpfs_duplicados,
                         colunas,
                         ARQUIVO_RELATORIO_CPFS_DUPLICADOS,
+                        registros_ja_cadastrados,
                     )
                 except OSError as erro:
                     LOGGER.error(
@@ -1581,14 +1644,16 @@ class ImportadorApp:
                     )
                     return
 
+                linhas_csv_ignoradas = linhas_duplicadas_ignoradas | linhas_ja_cadastradas
                 LOGGER.warning(
-                    "CPFs duplicados encontrados: grupos=%s registros_ignorados=%s "
-                    "relatorio=%s.",
+                    "CPFs duplicados encontrados: grupos=%s duplicados_ignorados=%s "
+                    "ja_cadastrados=%s relatorio=%s.",
                     len(grupos_cpfs_duplicados),
-                    len(linhas_csv_ignoradas),
+                    len(linhas_duplicadas_ignoradas),
+                    len(linhas_ja_cadastradas),
                     ARQUIVO_RELATORIO_CPFS_DUPLICADOS.name,
                 )
-        # Fim do bloco de validação de CPF duplicado e geração do relatório Excel (clientes).
+        # Fim do bloco de validação de CPF duplicado e já cadastrado, com relatório Excel (clientes).
 
         try:
             linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(
@@ -1858,16 +1923,19 @@ class ImportadorApp:
             return
 
         LOGGER.info(
-            "Importação CSV concluída: tabela=%s registros=%s duplicados=%s.",
+            "Importação CSV concluída: tabela=%s registros=%s ignorados=%s ja_cadastrados=%s.",
             nome_tabela,
             linhas_importadas,
             len(linhas_csv_ignoradas),
+            len(linhas_ja_cadastradas),
         )
-        # Início do bloco da tela de resumo com registros inseridos e duplicados (clientes).
+        # Início do bloco da tela de resumo com registros inseridos, duplicados e já cadastrados (clientes).
+        duplicados_no_csv = len(linhas_csv_ignoradas - linhas_ja_cadastradas)
         if validar_cpfs_duplicados:
             resumo_importacao = (
                 f"Registros inseridos: {linhas_importadas}\n"
-                f"Registros duplicados ignorados: {len(linhas_csv_ignoradas)}"
+                f"Registros duplicados ignorados: {duplicados_no_csv}\n"
+                f"Registros já cadastrados (CPF existente): {len(linhas_ja_cadastradas)}"
             )
         else:
             resumo_importacao = (
@@ -1876,7 +1944,8 @@ class ImportadorApp:
         if validar_cpfs_duplicados:
             self.status.set(
                 f"Importação concluída: {linhas_importadas} registro(s) inserido(s) "
-                f"em {nome_tabela}; {len(linhas_csv_ignoradas)} duplicado(s) ignorado(s)."
+                f"em {nome_tabela}; {duplicados_no_csv} duplicado(s) e "
+                f"{len(linhas_ja_cadastradas)} já cadastrado(s) ignorado(s)."
             )
         else:
             self.status.set(
@@ -1888,7 +1957,7 @@ class ImportadorApp:
             resumo_importacao,
             parent=self.root,
         )
-        # Fim do bloco da tela de resumo com registros inseridos e duplicados (clientes).
+        # Fim do bloco da tela de resumo com registros inseridos, duplicados e já cadastrados (clientes).
 
     # Início do bloco exclusivo de importação de grupos sem validações de produto.
     def importar_grupos_csv(self):
