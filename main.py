@@ -1065,7 +1065,9 @@ class ImportadorApp:
     """
 
     # Início do bloco de importação e validação de arquivos CSV.
-    def _analisar_colunas_unicas_csv(self, caminho, colunas, validar_codigos=True):
+    def _analisar_colunas_unicas_csv(
+        self, caminho, colunas, validar_codigos=True, codigo_opcional=False
+    ):
         if not validar_codigos:
             with open(caminho, "r", encoding="utf-8-sig", newline="") as arquivo:
                 leitor = csv.reader(arquivo, delimiter=";")
@@ -1089,6 +1091,8 @@ class ImportadorApp:
         for nome_coluna in colunas_obrigatorias:
             indices = indices_colunas[nome_coluna.casefold()]
             if not indices:
+                if codigo_opcional and nome_coluna.casefold() == "codigo":
+                    continue
                 problemas.append(f'Coluna obrigatória "{nome_coluna}" ausente no cabeçalho.')
             elif len(indices) > 1:
                 problemas.append(f'Coluna obrigatória "{nome_coluna}" aparece mais de uma vez.')
@@ -1481,7 +1485,7 @@ class ImportadorApp:
         for numero_linha in sorted(itens):
             item, duplicado_ignorado = itens[numero_linha]
             if numero_linha in linhas_ja_cadastradas:
-                acao = f"Ignorado: CPF {item['cpf']} já cadastrado na tabela pessoa"
+                acao = f"Ignorado: Registro {item['cpf']} já cadastrado na tabela pessoa"
             elif duplicado_ignorado:
                 acao = "Ignorado como duplicado"
             else:
@@ -1657,7 +1661,7 @@ class ImportadorApp:
 
         try:
             linhas_analisadas, problemas = self._analisar_colunas_unicas_csv(
-                caminho, colunas, validar_codigos
+                caminho, colunas, validar_codigos, gerar_codigo_automatico
             )
         except (OSError, UnicodeError, csv.Error, ValueError) as erro:
             LOGGER.error("Falha na análise prévia do CSV (%s).", type(erro).__name__)
@@ -1715,13 +1719,11 @@ class ImportadorApp:
         # Início do bloco que prepara a coluna info de produto.
         incluir_info_padrao = partes_tabela[-1].casefold() == "produto"
         colunas_insert = list(colunas)
-        # Início do bloco que define se o código de pessoa será gerado (CSV sem coluna codigo).
+        # Início do bloco que define se o código será gerado (CSV sem coluna codigo).
         gerar_codigo_pessoa = gerar_codigo_automatico and not any(
             coluna.casefold() == "codigo" for coluna in colunas
         )
-        if gerar_codigo_pessoa:
-            colunas_insert.append("codigo")
-        # Fim do bloco que define se o código de pessoa será gerado.
+        # Fim do bloco que define se o código será gerado.
 
         # Início do bloco que mapeia codigo_grupo para produto.grupo.
         indice_codigo_grupo = next(
@@ -1762,6 +1764,19 @@ class ImportadorApp:
             indice_info = len(colunas_insert)
             colunas_insert.append("info")
         # Fim do bloco que prepara a coluna info de produto.
+
+        # Início do bloco que inclui a coluna codigo gerada, sempre por último no INSERT.
+        if gerar_codigo_pessoa:
+            colunas_insert.append("codigo")
+        indice_codigo_insert = next(
+            (
+                indice
+                for indice, coluna in enumerate(colunas_insert)
+                if coluna.casefold() == "codigo"
+            ),
+            None,
+        )
+        # Fim do bloco que inclui a coluna codigo gerada.
 
         LOGGER.info(
             "Validação do CSV concluída: tabela=%s linhas=%s.",
@@ -1851,11 +1866,19 @@ class ImportadorApp:
                         else:
                             valores_para_inserir.append("Importado via importador AS.")
                     # Fim do bloco que marca cada linha importada para produto.
-                    # Início do bloco que adiciona o código sequencial gerado para pessoa.
+                    # Início do bloco que adiciona o código sequencial gerado (pessoa e produto).
                     if gerar_codigo_pessoa:
-                        valores_para_inserir.append(proximo_codigo)
+                        valores_para_inserir.append(str(proximo_codigo))
                         proximo_codigo += 1
-                    # Fim do bloco que adiciona o código sequencial gerado para pessoa.
+                    elif (
+                        gerar_codigo_automatico
+                        and indice_codigo_insert is not None
+                        and not valores_para_inserir[indice_codigo_insert].strip()
+                    ):
+                        # Coluna codigo existe no CSV, mas a célula está em branco.
+                        valores_para_inserir[indice_codigo_insert] = str(proximo_codigo)
+                        proximo_codigo += 1
+                    # Fim do bloco que adiciona o código sequencial gerado (pessoa e produto).
                     linhas_importadas += 1
                     # Início do bloco de conversão para maiúsculas antes do INSERT.
                     valores_convertidos = []
@@ -1896,21 +1919,23 @@ class ImportadorApp:
                                 grids_por_codigo[codigo] = grid
                     # Fim do bloco que carrega os grids de grupo_produto por codigo.
 
-                    # Início do bloco que consulta o último código de pessoa para gerar os próximos.
-                    if gerar_codigo_pessoa:
+                    # Início do bloco que consulta o último código cadastrado para gerar os próximos.
+                    if gerar_codigo_automatico:
+                        # codigo pode ser texto (produto); compara só valores numéricos como número.
                         consulta_ultimo_codigo = sql.SQL(
-                            "SELECT COALESCE(MAX({}), 0) FROM {}"
+                            "SELECT COALESCE(MAX(({codigo})::text::numeric), 0) FROM {tabela} "
+                            "WHERE ({codigo})::text ~ '^[0-9]+$'"
                         ).format(
-                            sql.Identifier("codigo"),
-                            sql.Identifier(*partes_tabela),
+                            codigo=sql.Identifier("codigo"),
+                            tabela=sql.Identifier(*partes_tabela),
                         )
                         cursor.execute(consulta_ultimo_codigo)
                         proximo_codigo = int(cursor.fetchone()[0]) + 1
-                    # Fim do bloco que consulta o último código de pessoa para gerar os próximos.
+                    # Fim do bloco que consulta o último código cadastrado para gerar os próximos.
 
-                    # Início do INSERT dos registros do CSV (clientes: tabela pessoa).
+                    # Início do INSERT dos registros do CSV (clientes: pessoa; produtos: produto).
                     cursor.executemany(consulta_insert, ler_linhas())
-                    # Fim do INSERT dos registros do CSV (clientes: tabela pessoa).
+                    # Fim do INSERT dos registros do CSV (clientes: pessoa; produtos: produto).
             # Fim do bloco que envia os valores em UTF-8 ao INSERT.
         except (psycopg.Error, OSError, UnicodeError, csv.Error, ValueError) as erro:
             self.status.set("Falha ao importar o CSV.")
@@ -1935,7 +1960,7 @@ class ImportadorApp:
             resumo_importacao = (
                 f"Registros inseridos: {linhas_importadas}\n"
                 f"Registros duplicados ignorados: {duplicados_no_csv}\n"
-                f"Registros já cadastrados (CPF existente): {len(linhas_ja_cadastradas)}"
+                f"Registros já cadastrados (CPF/CNPJ já existente): {len(linhas_ja_cadastradas)}"
             )
         else:
             resumo_importacao = (
@@ -1987,6 +2012,7 @@ class ImportadorApp:
         self.importar_dados_csv(
             tabela_fixa="produto",
             solicitar_configuracao=True,
+            gerar_codigo_automatico=True,
         )
 
     # Fim do bloco exclusivo de importação de produtos para a tabela produto.
